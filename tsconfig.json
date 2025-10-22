@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
+    "outDir": "./",
+    "rootDir": "./",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@refinio/*": ["./packages/*"]
+    }
+  },
+  "include": [
+    "handlers/**/*",
+    "services/**/*",
+    "models/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "packages",
+    "**/*.test.ts"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@chat/core",
+  "version": "1.0.0",
+  "description": "Chat/messaging business logic (platform-agnostic)",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "find . -name '*.js' -not -path './node_modules/*' -not -path './packages/*' -delete"
+  },
+  "exports": {
+    "./handlers/*": "./handlers/*",
+    "./services/*": "./services/*",
+    "./models/*": "./models/*",
+    "./cache/*": "./cache/*"
+  },
+  "author": "lama.one Team",
+  "license": "MIT",
+  "private": true,
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.7.2"
+  }
+}
