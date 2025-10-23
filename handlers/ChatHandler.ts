@@ -339,8 +339,24 @@ export class ChatHandler {
       const limit = request.limit || 50;
       const offset = request.offset || 0;
 
-      // Get topic room
-      const topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
+      // Get topic room - may not exist yet if topic is being created
+      let topicRoom;
+      try {
+        topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
+      } catch (error: any) {
+        // Topic doesn't exist yet - return empty messages (valid during topic creation)
+        if (error.message?.includes('does not exist')) {
+          console.log(`[ChatHandler] Topic ${request.conversationId} doesn't exist yet, returning empty messages`);
+          return {
+            success: true,
+            messages: [],
+            hasMore: false,
+            total: 0
+          };
+        }
+        throw error; // Re-throw other errors
+      }
+
       if (!topicRoom) {
         throw new Error(`Topic not found: ${request.conversationId}`);
       }
@@ -420,7 +436,7 @@ export class ChatHandler {
       const name = request.name || `Conversation ${Date.now()}`;
 
       // Create topic using TopicModel
-      const topic = await this.nodeOneCore.topicModel.createTopic(name);
+      const topic = await this.nodeOneCore.topicModel.createGroupTopic(name);
       const topicId = String(await topic.idHash());
 
       console.log('[ChatHandler] Created topic:', topicId);

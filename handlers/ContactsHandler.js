@@ -51,18 +51,7 @@ export class ContactsHandler {
                             displayName = nameDesc.name;
                         }
                     }
-                    // If no PersonName found, get name or email from Person object
-                    if (!displayName) {
-                        const person = await this.nodeOneCore.getObjectByIdHash(personId);
-                        if (person) {
-                            // Try name first (AI contacts have this), then fall back to email
-                            displayName = person.name || person.email;
-                        }
-                        if (!displayName) {
-                            throw new Error(`Person ${String(personId).substring(0, 8)} has no name or email - this should never happen`);
-                        }
-                    }
-                    // Check if this is an AI contact
+                    // Check if this is an AI contact first (for fallback display name)
                     let isAI = false;
                     let modelId;
                     if (this.nodeOneCore.aiAssistantModel?.llmObjectManager) {
@@ -70,6 +59,49 @@ export class ContactsHandler {
                         // If this is an AI, get the model ID
                         if (isAI && this.nodeOneCore.aiAssistantModel) {
                             modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(personId);
+                        }
+                    }
+                    // If no PersonName found, get name or email from Person object
+                    if (!displayName) {
+                        const person = await this.nodeOneCore.getObjectByIdHash(personId);
+                        if (person) {
+                            // Try name first (AI contacts have this), then fall back to email
+                            displayName = person.name || person.email;
+                            // For AI contacts with email but no name, try to get model display name
+                            if (!displayName && person.email?.endsWith('@ai.local')) {
+                                // Extract modelId from email (format: "model_id@ai.local")
+                                const emailModelId = person.email.replace('@ai.local', '').replace(/_/g, ':');
+                                if (this.nodeOneCore.aiAssistantModel?.llmObjectManager) {
+                                    try {
+                                        const llmObject = await this.nodeOneCore.aiAssistantModel.llmObjectManager.getByModelId(emailModelId);
+                                        if (llmObject?.name) {
+                                            displayName = llmObject.name;
+                                            console.log(`[ContactsHandler] Resolved AI name from LLM object: ${displayName}`);
+                                        }
+                                    }
+                                    catch (err) {
+                                        // LLM object lookup failed, continue to fallback
+                                    }
+                                }
+                                // Still no name? Use the modelId itself (better than person ID)
+                                if (!displayName) {
+                                    displayName = emailModelId;
+                                    console.warn(`[ContactsHandler] AI Person ${String(personId).substring(0, 8)} using modelId from email: ${emailModelId}`);
+                                }
+                            }
+                        }
+                        // Final fallback for non-AI contacts or AI without email
+                        if (!displayName) {
+                            if (isAI && modelId) {
+                                // Use model ID if we have it from the cache
+                                displayName = modelId;
+                                console.warn(`[ContactsHandler] AI Person ${String(personId).substring(0, 8)} using cached modelId: ${modelId}`);
+                            }
+                            else {
+                                // Last resort: use truncated person ID
+                                displayName = `Contact ${String(personId).substring(0, 8)}`;
+                                console.warn(`[ContactsHandler] Person ${String(personId).substring(0, 8)} has no identifiable info - using ID as fallback`);
+                            }
                         }
                     }
                     allContacts.push({

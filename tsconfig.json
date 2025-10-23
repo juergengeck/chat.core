@@ -22,7 +22,8 @@
   "include": [
     "handlers/**/*",
     "services/**/*",
-    "models/**/*"
+    "models/**/*",
+    "recipes/**/*"
   ],
   "exclude": [
     "node_modules",
