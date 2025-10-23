@@ -76,7 +76,6 @@ export class ContactsHandler {
                                         const llmObject = await this.nodeOneCore.aiAssistantModel.llmObjectManager.getByModelId(emailModelId);
                                         if (llmObject?.name) {
                                             displayName = llmObject.name;
-                                            console.log(`[ContactsHandler] Resolved AI name from LLM object: ${displayName}`);
                                         }
                                     }
                                     catch (err) {
@@ -86,7 +85,6 @@ export class ContactsHandler {
                                 // Still no name? Use the modelId itself (better than person ID)
                                 if (!displayName) {
                                     displayName = emailModelId;
-                                    console.warn(`[ContactsHandler] AI Person ${String(personId).substring(0, 8)} using modelId from email: ${emailModelId}`);
                                 }
                             }
                         }
@@ -95,12 +93,10 @@ export class ContactsHandler {
                             if (isAI && modelId) {
                                 // Use model ID if we have it from the cache
                                 displayName = modelId;
-                                console.warn(`[ContactsHandler] AI Person ${String(personId).substring(0, 8)} using cached modelId: ${modelId}`);
                             }
                             else {
-                                // Last resort: use truncated person ID
+                                // Last resort: use truncated person ID (silent fallback)
                                 displayName = `Contact ${String(personId).substring(0, 8)}`;
-                                console.warn(`[ContactsHandler] Person ${String(personId).substring(0, 8)} has no identifiable info - using ID as fallback`);
                             }
                         }
                     }

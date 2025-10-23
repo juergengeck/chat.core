@@ -19,7 +19,7 @@ export interface UIReadyResponse {
 }
 export interface SendMessageRequest {
     conversationId: string;
-    text: string;
+    content: string;
     attachments?: any[];
 }
 export interface SendMessageResponse {

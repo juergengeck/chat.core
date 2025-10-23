@@ -32,7 +32,7 @@ export interface UIReadyResponse {
 
 export interface SendMessageRequest {
   conversationId: string;
-  text: string;
+  content: string;  // Changed from 'text' to match response format
   attachments?: any[];
 }
 
@@ -256,7 +256,7 @@ export class ChatHandler {
    * Send a message to a conversation
    */
   async sendMessage(request: SendMessageRequest): Promise<SendMessageResponse> {
-    console.log('[ChatHandler] Send message:', { conversationId: request.conversationId, text: request.text });
+    console.log('[ChatHandler] Send message:', { conversationId: request.conversationId, content: request.content });
 
     try {
       if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
@@ -273,8 +273,8 @@ export class ChatHandler {
         throw new Error(`Invalid conversationId: ${request.conversationId}`);
       }
 
-      if (!request.text || request.text.trim().length === 0) {
-        throw new Error('Message text cannot be empty');
+      if (!request.content || request.content.trim().length === 0) {
+        throw new Error('Message content cannot be empty');
       }
 
       // Get topic room
@@ -298,22 +298,51 @@ export class ChatHandler {
         }).filter(Boolean);
 
         await topicRoom.sendMessageWithAttachmentAsHash(
-          request.text || '',
+          request.content || '',
           attachmentHashes,
           undefined,
           channelOwner
         );
       } else {
-        await topicRoom.sendMessage(request.text, undefined, channelOwner);
+        await topicRoom.sendMessage(request.content, undefined, channelOwner);
+      }
+
+      //  **CRITICAL**: Trigger AI response if conversation has AI participant
+      // This must happen AFTER the user's message is sent
+      if (this.nodeOneCore.aiAssistantModel) {
+        const isAITopic = this.nodeOneCore.aiAssistantModel.isAITopic(request.conversationId);
+        console.log('[ChatHandler] AI topic check:', { conversationId: request.conversationId, isAITopic });
+
+        if (isAITopic) {
+          console.log('[ChatHandler] 🤖 Triggering AI response for topic:', request.conversationId);
+
+          // Trigger AI response in background (don't await - let it stream independently)
+          // Using setTimeout(0) for browser compatibility (equivalent to setImmediate in Node.js)
+          setTimeout(async () => {
+            try {
+              await this.nodeOneCore.aiAssistantModel.processMessage(
+                request.conversationId,
+                request.content,
+                userId as any
+              );
+              console.log('[ChatHandler] ✅ AI response triggered successfully');
+            } catch (aiError) {
+              console.error('[ChatHandler] ❌ AI response failed:', aiError);
+            }
+          }, 0);
+        }
       }
 
       return {
         success: true,
         data: {
+          id: `msg-${Date.now()}`,
           conversationId: request.conversationId,
-          text: request.text,
-          attachments: request.attachments || [],
-          timestamp: Date.now()
+          content: request.content,  // Fixed: use request.content to match interface
+          sender: this.nodeOneCore.ownerId,
+          senderName: 'You',
+          timestamp: Date.now(),
+          attachments: request.attachments || []
         }
       };
     } catch (error) {
@@ -381,7 +410,7 @@ export class ChatHandler {
 
               if (isAI) {
                 // Get the LLM object to find the name
-                const llmObjects = this.nodeOneCore.aiAssistantModel?.llmObjectManager?.getAllLLMObjects() || [];
+                const llmObjects = this.nodeOneCore.llmObjectManager?.getAllLLMObjects() || [];
                 const llmObject = llmObjects.find((obj: any) => {
                   try {
                     return this.nodeOneCore.aiAssistantModel?.matchesLLM(sender, obj);
@@ -391,27 +420,54 @@ export class ChatHandler {
                 });
 
                 if (llmObject) {
-                  senderName = llmObject.name || llmObject.modelName || llmObject.modelId || 'AI Assistant';
+                  senderName = llmObject.name || llmObject.modelName || llmObject.modelId;
+                  if (!senderName) {
+                    console.error(`[ChatHandler] LLM object exists but has no name fields: ${JSON.stringify(llmObject)}`);
+                    senderName = 'AI Assistant';
+                  }
+                } else {
+                  // LLM object not found - log error but don't crash
+                  console.error(`[ChatHandler] AI sender detected but no LLM object found for: ${sender}`);
+                  // Try to get modelId from aiAssistantModel
+                  const modelId = this.nodeOneCore.aiAssistantModel?.getModelIdForPersonId?.(sender);
+                  senderName = modelId || 'AI Assistant';
                 }
               }
             }
 
             // For non-AI senders, get their name from profiles
             if (!isAI && this.nodeOneCore.leuteModel) {
-              const others: any = await this.nodeOneCore.leuteModel.others();
-              for (const someone of others) {
+              // First check if sender is the current user
+              if (sender.toString() === this.nodeOneCore.ownerId?.toString()) {
                 try {
-                  const personId: any = await someone.mainIdentity();
-                  if (personId && sender && personId.toString() === sender.toString()) {
-                    const profile: any = await someone.mainProfile();
+                  const me: any = await this.nodeOneCore.leuteModel.me();
+                  if (me) {
+                    const profile: any = await me.mainProfile();
                     if (profile) {
                       const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
-                      senderName = personName?.name || profile.name || 'User';
-                      break;
+                      senderName = personName?.name || profile.name || 'You';
                     }
                   }
                 } catch (e) {
-                  // Continue to next person
+                  console.error('[ChatHandler] Failed to get current user name:', e);
+                }
+              } else {
+                // Check other contacts
+                const others: any = await this.nodeOneCore.leuteModel.others();
+                for (const someone of others) {
+                  try {
+                    const personId: any = await someone.mainIdentity();
+                    if (personId && sender && personId.toString() === sender.toString()) {
+                      const profile: any = await someone.mainProfile();
+                      if (profile) {
+                        const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                        senderName = personName?.name || profile.name || 'User';
+                        break;
+                      }
+                    }
+                  } catch (e) {
+                    // Continue to next person
+                  }
                 }
               }
             }
@@ -431,14 +487,18 @@ export class ChatHandler {
         };
       }));
 
-      // Sort by timestamp descending (newest first)
+      // Sort by timestamp ascending (oldest first in array)
       const sortedMessages = formattedMessages.sort((a: any, b: any) => {
-        return b.timestamp - a.timestamp;
+        return a.timestamp - b.timestamp;
       });
 
-      // Apply pagination
-      const paginatedMessages = sortedMessages.slice(offset, offset + limit);
-      const hasMore = sortedMessages.length > offset + limit;
+      // Apply pagination from the END (most recent messages first)
+      // Chat apps show newest messages when you open a conversation
+      const totalMessages = sortedMessages.length;
+      const endIndex = Math.max(0, totalMessages - offset);
+      const startIndex = Math.max(0, endIndex - limit);
+      const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
+      const hasMore = startIndex > 0;
 
       return {
         success: true,
@@ -533,12 +593,50 @@ export class ChatHandler {
             }
           }
 
+          // Fetch last message for preview
+          let lastMessage = '';
+          let lastMessageTime = Date.now();
+          try {
+            const topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(topicId);
+            const messages = await topicRoom.retrieveAllMessages();
+            if (messages.length > 0) {
+              // Get the most recent message
+              const sortedMessages = messages.sort((a: any, b: any) => {
+                const timeA = a.creationTime ? new Date(a.creationTime).getTime() : 0;
+                const timeB = b.creationTime ? new Date(b.creationTime).getTime() : 0;
+                return timeB - timeA; // Descending order (newest first)
+              });
+              const recentMessage = sortedMessages[0];
+              lastMessage = recentMessage.data?.text || recentMessage.text || '';
+              lastMessageTime = recentMessage.creationTime ? new Date(recentMessage.creationTime).getTime() : Date.now();
+
+              // Strip [THINKING] and [RESPONSE] tags from AI messages for preview
+              // Extract only the response content if structured tags exist
+              const responseMatch = lastMessage.match(/\[RESPONSE\]\s*([\s\S]*)(?:\[\/RESPONSE\]|$)/);
+              if (responseMatch) {
+                lastMessage = responseMatch[1].trim();
+              } else {
+                // Remove any thinking sections that might be present
+                lastMessage = lastMessage.replace(/\[THINKING\][\s\S]*?\[\/THINKING\]\s*/g, '').trim();
+              }
+
+              // Truncate message preview to 100 characters
+              if (lastMessage.length > 100) {
+                lastMessage = lastMessage.substring(0, 100) + '...';
+              }
+            }
+          } catch (error) {
+            // If we can't fetch messages, just continue without preview
+            console.warn(`[ChatHandler] Could not fetch last message for topic ${topicId}:`, error);
+          }
+
           return {
             id: topicId,
             name: name || topicId,
             type: 'chat',
             participants: [],
-            lastActivity: Date.now(),
+            lastActivity: lastMessageTime,
+            lastMessage,
             unreadCount: 0,
             isAITopic,
             aiModelId
