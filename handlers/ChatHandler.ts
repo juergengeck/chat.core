@@ -368,12 +368,52 @@ export class ChatHandler {
       const formattedMessages = await Promise.all(allMessages.map(async (msg: any) => {
         let senderName = 'Unknown';
 
-        // Look up sender name from Person object
-        if (msg.data.sender) {
+        // Get sender from either author or data.sender (matches Electron pattern)
+        const sender = msg.author || msg.data?.sender;
+
+        // Look up sender name - check AI first (matches Electron pattern at chat.ts:367-420)
+        if (sender) {
           try {
-            const person = await this.nodeOneCore.leuteModel.getPersonByIdHash(msg.data.sender);
-            if (person && person.email) {
-              senderName = person.email;
+            // Check if sender is an AI contact FIRST
+            let isAI = false;
+            if (this.nodeOneCore.aiAssistantModel) {
+              isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
+
+              if (isAI) {
+                // Get the LLM object to find the name
+                const llmObjects = this.nodeOneCore.aiAssistantModel?.llmObjectManager?.getAllLLMObjects() || [];
+                const llmObject = llmObjects.find((obj: any) => {
+                  try {
+                    return this.nodeOneCore.aiAssistantModel?.matchesLLM(sender, obj);
+                  } catch {
+                    return false;
+                  }
+                });
+
+                if (llmObject) {
+                  senderName = llmObject.name || llmObject.modelName || llmObject.modelId || 'AI Assistant';
+                }
+              }
+            }
+
+            // For non-AI senders, get their name from profiles
+            if (!isAI && this.nodeOneCore.leuteModel) {
+              const others: any = await this.nodeOneCore.leuteModel.others();
+              for (const someone of others) {
+                try {
+                  const personId: any = await someone.mainIdentity();
+                  if (personId && sender && personId.toString() === sender.toString()) {
+                    const profile: any = await someone.mainProfile();
+                    if (profile) {
+                      const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                      senderName = personName?.name || profile.name || 'User';
+                      break;
+                    }
+                  }
+                } catch (e) {
+                  // Continue to next person
+                }
+              }
             }
           } catch (error) {
             console.error('[ChatHandler] Failed to get sender name:', error);
@@ -382,11 +422,11 @@ export class ChatHandler {
 
         return {
           id: msg.id,
-          text: msg.data.text || '',
-          sender: msg.data.sender,
+          content: msg.data?.text || msg.text || '',  // Check both data.text and text (matches Electron)
+          sender,
           senderName,
           timestamp: msg.creationTime ? new Date(msg.creationTime).getTime() : Date.now(),
-          attachments: msg.data.attachments || [],
+          attachments: msg.data?.attachments || [],
           creationTime: msg.creationTime
         };
       }));
