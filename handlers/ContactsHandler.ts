@@ -667,11 +667,20 @@ export class ContactsHandler {
       const result = await getObjectByIdHash(groupIdHash);
       const group: Group = result.obj;
 
-      // Clear all members (soft delete)
-      group.person = [];
+      // Create empty HashGroup (soft delete)
+      const emptyHashGroup = await storeVersionedObject({
+        $type$: 'HashGroup',
+        members: []
+      });
 
-      // Store empty Group
-      await storeVersionedObject(group);
+      // Update Group to reference empty HashGroup
+      await storeVersionedObject({
+        $type$: 'Group',
+        $versionHash$: (group as any).$versionHash$,
+        name: group.name,
+        hashGroup: emptyHashGroup.idHash
+      });
+
       return { success: true };
     } catch (error) {
       console.error('[ContactsHandler] Failed to delete group:', error);
