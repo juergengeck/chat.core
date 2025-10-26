@@ -112,5 +112,51 @@ export declare class ContactsHandler {
         success: boolean;
         error?: string;
     }>;
+    /**
+     * Get all groups using core Group objects
+     */
+    getGroups(): Promise<{
+        success: boolean;
+        groups?: any[];
+        error?: string;
+    }>;
+    /**
+     * Create a new group using core Group object
+     */
+    createGroup(name: string, memberIds?: string[]): Promise<{
+        success: boolean;
+        group?: any;
+        error?: string;
+    }>;
+    /**
+     * Add contacts to a group (core Group pattern)
+     */
+    addContactsToGroup(groupId: string, contactIds: string[]): Promise<{
+        success: boolean;
+        error?: string;
+    }>;
+    /**
+     * Remove contacts from a group (core Group pattern)
+     */
+    removeContactsFromGroup(groupId: string, contactIds: string[]): Promise<{
+        success: boolean;
+        error?: string;
+    }>;
+    /**
+     * Get group members (core Group pattern)
+     */
+    getGroupMembers(groupId: string): Promise<{
+        success: boolean;
+        members?: any[];
+        error?: string;
+    }>;
+    /**
+     * Delete a group - NOTE: Groups cannot be truly deleted in ONE.core
+     * This marks the group as deleted by removing all members
+     */
+    deleteGroup(groupId: string): Promise<{
+        success: boolean;
+        error?: string;
+    }>;
 }
 //# sourceMappingURL=ContactsHandler.d.ts.map

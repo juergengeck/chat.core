@@ -86,13 +86,22 @@ export class TopicGroupManager {
     try {
       // Get all participants
       const participants: any = await this.getDefaultParticipants(aiPersonId);
-      
+
       // Create a Group object with these members
       const groupName = `conversation-${topicId}`;
+
+      // 1. Create HashGroup with members
+      const hashGroup = {
+        $type$: 'HashGroup' as const,
+        members: participants
+      };
+      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(hashGroup as any);
+
+      // 2. Create Group referencing the HashGroup
       const group = {
         $type$: 'Group' as const,
         name: groupName,
-        person: participants  // Group recipe expects 'person' not 'members'
+        hashGroup: storedHashGroup.idHash
       };
 
       // Store the group
@@ -169,124 +178,136 @@ export class TopicGroupManager {
   }
 
   /**
-   * Add a remote participant to relevant conversation groups
+   * Add a participant to relevant conversation groups
    * This is called when a CHUM connection is established
    * For group chats: adds them to groups where they should be a member
    * For P2P: ensures the P2P conversation structure exists
-   * @param {string} remotePersonId - The person ID to add to relevant groups
+   * @param {string} personId - The person ID to add to relevant groups
    */
-  async addRemoteParticipantToRelevantGroups(remotePersonId: any): Promise<any> {
-    console.log(`[TopicGroupManager] Adding remote participant ${String(remotePersonId).substring(0, 8)} to relevant conversation groups`);
-    
+  async addParticipantToRelevantGroups(personId: any): Promise<any> {
+    console.log(`[TopicGroupManager] Adding participant ${String(personId).substring(0, 8)} to relevant conversation groups`);
+
     // For group chats, we need to:
-    // 1. Find all group conversations where this remote should be a member
+    // 1. Find all group conversations where this person should be a member
     // 2. Add them to those groups
     // 3. Let them know they need to create their own channels
-    
+
     // For now, we'll handle P2P conversations
     // Group chat membership should be managed explicitly when creating the group
-    
-    // Generate the P2P topic ID for this remote participant
-    const sortedIds = [this.oneCore.ownerId, remotePersonId].sort();
+
+    // Generate the P2P topic ID for this participant
+    const sortedIds = [this.oneCore.ownerId, personId].sort();
     const p2pTopicId = `${sortedIds[0]}<->${sortedIds[1]}`;
-    
+
     // Check if we have a P2P conversation with this peer
     const groupIdHash = this.conversationGroups.get(p2pTopicId);
-    
+
     if (groupIdHash) {
       try {
-        console.log(`[TopicGroupManager] P2P conversation exists with ${String(remotePersonId).substring(0, 8)}: ${p2pTopicId}`);
+        console.log(`[TopicGroupManager] P2P conversation exists with ${String(personId).substring(0, 8)}: ${p2pTopicId}`);
         // The group already exists and both parties should be members
         // Just ensure access is granted
-        await this.ensureGroupAccess(groupIdHash, remotePersonId);
+        await this.ensureGroupAccess(groupIdHash, personId);
       } catch (error) {
         console.warn(`[TopicGroupManager] Failed to ensure P2P group access:`, (error as Error).message);
       }
     }
-    
-    // For group chats: Remote peers need to be explicitly added when the group is created
+
+    // For group chats: Peers need to be explicitly added when the group is created
     // They will receive the Group object through CHUM sync if they're members
     // They need to create their own channels when they detect the group
-    
-    console.log(`[TopicGroupManager] Completed processing groups for remote participant`);
+
+    console.log(`[TopicGroupManager] Completed processing groups for participant`);
   }
   
   /**
-   * Ensure a remote participant has access to a group they're a member of
+   * Ensure a participant has access to a group they're a member of
    */
-  async ensureGroupAccess(groupIdHash: any, remotePersonId: any): Promise<any> {
+  async ensureGroupAccess(groupIdHash: any, personId: any): Promise<any> {
     // IMPORTANT: Do NOT grant person-based access to the Group object itself
     // This would cause CHUM to try to sync the Group object, which is rejected
     // Groups stay local - only IdAccess objects referencing them are shared (for channel access)
-    console.log(`[TopicGroupManager] Note: Groups are local objects, not syncing group ${String(groupIdHash).substring(0, 8)} to ${String(remotePersonId).substring(0, 8)}`);
+    console.log(`[TopicGroupManager] Note: Groups are local objects, not syncing group ${String(groupIdHash).substring(0, 8)} to ${String(personId).substring(0, 8)}`);
   }
 
   /**
-   * Add a remote participant to a specific conversation group
+   * Add a participant to a specific conversation group
    * @param {string} topicId - The topic ID
    * @param {string} groupIdHash - The group's ID hash
-   * @param {string} remotePersonId - The person ID to add
+   * @param {string} personId - The person ID to add
    */
-  async addRemoteParticipantToGroup(topicId: any, groupIdHash: any, remotePersonId: any): Promise<any> {
-    console.log(`[TopicGroupManager] Adding ${String(remotePersonId).substring(0, 8)} to group for topic ${topicId}`);
+  async addParticipantToGroup(topicId: any, groupIdHash: any, personId: any): Promise<any> {
+    console.log(`[TopicGroupManager] Adding ${String(personId).substring(0, 8)} to group for topic ${topicId}`);
 
     try {
-      // Retrieve the existing group object
+      // 1. Load existing Group
       const result: any = await this.storageDeps.getObjectByIdHash(groupIdHash);
       const existingGroup: any = result.obj;
-      
+
       if (!existingGroup) {
         throw new Error(`Group ${groupIdHash} not found`);
       }
-      
+
+      // 2. Load existing HashGroup to get current members
+      const hashGroupResult: any = await this.storageDeps.getObjectByIdHash(existingGroup.hashGroup);
+      const currentMembers: any = hashGroupResult.obj.members || [];
+
       // Check if the person is already in the group
-      if (existingGroup.person && existingGroup.person.includes(remotePersonId)) {
-        console.log(`[TopicGroupManager] ${String(remotePersonId).substring(0, 8)} is already in the group`);
+      if (currentMembers.includes(personId)) {
+        console.log(`[TopicGroupManager] ${String(personId).substring(0, 8)} is already in the group`);
         return;
       }
-      
-      // Create an updated group with the new participant
+
+      // 3. Create new HashGroup with added member
+      const newHashGroup = {
+        $type$: 'HashGroup' as const,
+        members: [...currentMembers, personId]
+      };
+      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(newHashGroup as any);
+
+      // 4. Create new Group version pointing to new HashGroup
       const updatedGroup = {
         $type$: 'Group' as const,
+        $versionHash$: existingGroup.$versionHash$,  // Link to previous version
         name: existingGroup.name,
-        person: [...(existingGroup.person || []), remotePersonId]
+        hashGroup: storedHashGroup.idHash
       };
 
       // Store the updated group (this creates a new version)
       const storedGroup: any = await this.storageDeps.storeVersionedObject(updatedGroup as any);
       const newGroupIdHash = storedGroup.idHash;
-      
+
       // Update our cache
       this.conversationGroups.set(topicId, newGroupIdHash);
-      
+
       console.log(`[TopicGroupManager] Updated group for topic ${topicId} with new member`);
-      console.log(`[TopicGroupManager] New group members:`, updatedGroup.person.map(p => String(p).substring(0, 8)).join(', '));
+      console.log(`[TopicGroupManager] New group members:`, [...currentMembers, personId].map(p => String(p).substring(0, 8)).join(', '));
 
       // IMPORTANT: Do NOT grant person-based access to the Group object itself
       // This would cause CHUM to try to sync the Group object, which is rejected
       // Groups stay local - only IdAccess objects referencing them are shared
 
-      // Create a channel for the remote participant in this topic
+      // Create a channel for the participant in this topic
       if (this.oneCore.channelManager) {
-        await this.oneCore.channelManager.createChannel(topicId, remotePersonId);
-        
-        // Grant the group access to the remote participant's channel
+        await this.oneCore.channelManager.createChannel(topicId, personId);
+
+        // Grant the group access to the participant's channel
         const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
           $type$: 'ChannelInfo',
           id: topicId,
-          owner: remotePersonId
+          owner: personId
         });
-        
+
         await this.storageDeps.createAccess([{
           id: channelHash,
           person: [],
           group: [newGroupIdHash],
           mode: SET_ACCESS_MODE.ADD
         }]);
-        
-        console.log(`[TopicGroupManager] Created channel and granted group access for ${String(remotePersonId).substring(0, 8)}`);
+
+        console.log(`[TopicGroupManager] Created channel and granted group access for ${String(personId).substring(0, 8)}`);
       }
-      
+
       // Update the topic to use the new group
       if (this.oneCore.topicModel) {
         const topic: any = await (this.oneCore.topicModel as any).getTopicByName(topicId);
@@ -295,9 +316,9 @@ export class TopicGroupManager {
           console.log(`[TopicGroupManager] Updated topic ${topicId} with new group`);
         }
       }
-      
+
     } catch (error) {
-      console.error(`[TopicGroupManager] Failed to add remote participant to group:`, error);
+      console.error(`[TopicGroupManager] Failed to add participant to group:`, error);
       throw error;
     }
   }
@@ -379,10 +400,19 @@ export class TopicGroupManager {
 
     // Create the conversation group with all participants
     const groupName = `conversation-${topicId}`;
+
+    // 1. Create HashGroup with members
+    const hashGroup = {
+      $type$: 'HashGroup' as const,
+      members: participantIds  // All participants including node owner, AIs, other contacts
+    };
+    const storedHashGroup: any = await this.storageDeps.storeVersionedObject(hashGroup as any);
+
+    // 2. Create Group referencing the HashGroup
     const group = {
       $type$: 'Group' as const,
       name: groupName,
-      person: participantIds  // All participants including node owner, AIs, other contacts
+      hashGroup: storedHashGroup.idHash
     };
 
     // Store the group
@@ -429,18 +459,11 @@ export class TopicGroupManager {
     await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
     console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} access to topic ${topicId}`);
 
-    // Create additional channels based on conversation type
-    // For P2P: The main channel is null-owner (created above), but we can create individual channels too
-    // For Group: Create channels for local participants (ourselves and AI)
+    // Create channels for ALL participants in group chats
+    // In group chats, each participant has their own channel they write to
+    // All participants can read from all channels (via group access)
     for (const participantId of participantIds) {
-      const isOurself = participantId === this.oneCore.ownerId;
-      const isAI = this.oneCore.aiAssistantModel?.isAIPerson(participantId) || false;
-
-      // Only create channels for local participants (ourselves and AI)
-      // Remote participants must create their own channels
-      const shouldCreateChannel = isOurself || isAI;
-
-      if (shouldCreateChannel && participantId && this.oneCore.channelManager) {
+      if (participantId && this.oneCore.channelManager) {
         try {
           // Check if channel already exists before creating
           const hasChannel = await this.oneCore.channelManager.hasChannel(topicId, participantId);
@@ -448,8 +471,7 @@ export class TopicGroupManager {
           if (!hasChannel) {
             // Create a channel owned by this participant
             await this.oneCore.channelManager.createChannel(topicId, participantId);
-            const participantType = isAI ? 'AI' : (isOurself ? 'local' : 'remote');
-            console.log(`[TopicGroupManager] Created channel for ${participantType} participant ${String(participantId).substring(0, 8)}`);
+            console.log(`[TopicGroupManager] Created channel for participant ${String(participantId).substring(0, 8)}`);
           } else {
             console.log(`[TopicGroupManager] Channel already exists for participant ${String(participantId).substring(0, 8)}`);
           }
@@ -472,13 +494,11 @@ export class TopicGroupManager {
         } catch (error) {
           console.warn(`[TopicGroupManager] Channel creation for ${String(participantId).substring(0, 8)} failed:`, (error as Error).message);
         }
-      } else if (!isOurself && !isAI) {
-        console.log(`[TopicGroupManager] Skipping channel creation for remote participant ${String(participantId).substring(0, 8)} - they will create it themselves`);
       }
     }
 
     console.log(`[TopicGroupManager] Topic ${topicId} created with group ${String(groupIdHash).substring(0, 8)}`);
-    console.log(`[TopicGroupManager] Created channels for local and AI participants only`);
+    console.log(`[TopicGroupManager] Created channels for all ${participantIds.length} participants`);
 
     // IMPORTANT: Architecture:
     // - ONE topic ID for the conversation
@@ -531,10 +551,19 @@ export class TopicGroupManager {
       console.log(`[TopicGroupManager] Creating NEW group with ${allParticipants.length} participants`);
 
       const groupName = `conversation-${topicId}`;
+
+      // 1. Create HashGroup with members
+      const hashGroup = {
+        $type$: 'HashGroup' as const,
+        members: allParticipants
+      };
+      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(hashGroup as any);
+
+      // 2. Create Group referencing the HashGroup
       const group = {
         $type$: 'Group' as const,
         name: groupName,
-        person: allParticipants
+        hashGroup: storedHashGroup.idHash
       };
 
       const storedGroup: any = await this.storageDeps.storeVersionedObject(group as any);
@@ -554,6 +583,7 @@ export class TopicGroupManager {
       // Group exists - retrieve it, add new participants, store new version
       console.log(`[TopicGroupManager] Retrieving group from storage using ID hash: ${String(groupIdHash).substring(0, 8)}`);
 
+      // 1. Load existing Group
       const result: any = await this.storageDeps.getObjectByIdHash(groupIdHash);
       const existingGroup: any = result.obj;
 
@@ -561,11 +591,14 @@ export class TopicGroupManager {
         throw new Error(`Group ${String(groupIdHash).substring(0, 8)} not found`);
       }
 
-      console.log(`[TopicGroupManager] Retrieved existing group with ${existingGroup.person?.length || 0} participants`);
-      console.log(`[TopicGroupManager] Existing participants:`, (existingGroup.person || []).map((p: any) => String(p).substring(0, 8)));
+      // 2. Load existing HashGroup to get current members
+      const hashGroupResult: any = await this.storageDeps.getObjectByIdHash(existingGroup.hashGroup);
+      const currentMembers: any = hashGroupResult.obj.members || [];
+
+      console.log(`[TopicGroupManager] Retrieved existing group with ${currentMembers.length} participants`);
+      console.log(`[TopicGroupManager] Existing participants:`, currentMembers.map((p: any) => String(p).substring(0, 8)));
 
       // Filter out participants that are already in the group
-      const currentMembers = existingGroup.person || [];
       const newMembers = participants.filter((p: any) => !currentMembers.includes(p));
 
       if (newMembers.length === 0) {
@@ -576,27 +609,35 @@ export class TopicGroupManager {
 
       console.log(`[TopicGroupManager] Adding ${newMembers.length} NEW members to group`);
 
-      // Create new version with added participants
+      // 3. Create new HashGroup with added members
+      const newHashGroup = {
+        $type$: 'HashGroup' as const,
+        members: [...currentMembers, ...newMembers]
+      };
+      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(newHashGroup as any);
+
+      // 4. Create new Group version pointing to new HashGroup
       const updatedGroup = {
         $type$: 'Group' as const,
+        $versionHash$: existingGroup.$versionHash$,  // Link to previous version
         name: existingGroup.name,
-        person: [...currentMembers, ...newMembers]
+        hashGroup: storedHashGroup.idHash
       };
 
-      console.log(`[TopicGroupManager] Storing UPDATED group with ${updatedGroup.person.length} participants`);
+      console.log(`[TopicGroupManager] Storing UPDATED group with ${[...currentMembers, ...newMembers].length} participants`);
       const storedGroup: any = await this.storageDeps.storeVersionedObject(updatedGroup as any);
       const newGroupIdHash = storedGroup.idHash;
 
       console.log(`[TopicGroupManager] ✅ Stored UPDATED group with NEW ID hash: ${String(newGroupIdHash).substring(0, 8)}`);
       console.log(`[TopicGroupManager] OLD group hash: ${String(groupIdHash).substring(0, 8)}`);
       console.log(`[TopicGroupManager] NEW group hash: ${String(newGroupIdHash).substring(0, 8)}`);
-      console.log(`[TopicGroupManager] Updated group participants:`, updatedGroup.person.map((p: any) => String(p).substring(0, 8)));
+      console.log(`[TopicGroupManager] Updated group participants:`, [...currentMembers, ...newMembers].map((p: any) => String(p).substring(0, 8)));
 
       // Update cache with new version
       this.conversationGroups.set(topicId, newGroupIdHash);
       console.log(`[TopicGroupManager] ✅ Updated cache: topic ${topicId} -> ${String(newGroupIdHash).substring(0, 8)}`);
 
-      console.log(`[TopicGroupManager] Updated group for topic ${topicId}: added ${newMembers.length} new participants (total: ${updatedGroup.person.length})`);
+      console.log(`[TopicGroupManager] Updated group for topic ${topicId}: added ${newMembers.length} new participants (total: ${[...currentMembers, ...newMembers].length})`);
 
       groupIdHash = newGroupIdHash;
     }

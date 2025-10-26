@@ -65,24 +65,24 @@ export declare class TopicGroupManager {
      */
     getDefaultAIPersonId(): any;
     /**
-     * Add a remote participant to relevant conversation groups
+     * Add a participant to relevant conversation groups
      * This is called when a CHUM connection is established
      * For group chats: adds them to groups where they should be a member
      * For P2P: ensures the P2P conversation structure exists
-     * @param {string} remotePersonId - The person ID to add to relevant groups
+     * @param {string} personId - The person ID to add to relevant groups
      */
-    addRemoteParticipantToRelevantGroups(remotePersonId: any): Promise<any>;
+    addParticipantToRelevantGroups(personId: any): Promise<any>;
     /**
-     * Ensure a remote participant has access to a group they're a member of
+     * Ensure a participant has access to a group they're a member of
      */
-    ensureGroupAccess(groupIdHash: any, remotePersonId: any): Promise<any>;
+    ensureGroupAccess(groupIdHash: any, personId: any): Promise<any>;
     /**
-     * Add a remote participant to a specific conversation group
+     * Add a participant to a specific conversation group
      * @param {string} topicId - The topic ID
      * @param {string} groupIdHash - The group's ID hash
-     * @param {string} remotePersonId - The person ID to add
+     * @param {string} personId - The person ID to add
      */
-    addRemoteParticipantToGroup(topicId: any, groupIdHash: any, remotePersonId: any): Promise<any>;
+    addParticipantToGroup(topicId: any, groupIdHash: any, personId: any): Promise<any>;
     /**
      * Create a P2P topic following one.leute reference patterns exactly
      * @param {string} topicName - Display name for the topic

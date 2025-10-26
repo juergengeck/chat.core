@@ -5,7 +5,7 @@
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api handler architecture.
  */
-import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
 /**
  * ContactsHandler - Pure business logic for contact operations
@@ -63,8 +63,9 @@ export class ContactsHandler {
                     }
                     // If no PersonName found, get name or email from Person object
                     if (!displayName) {
-                        const person = await this.nodeOneCore.getObjectByIdHash(personId);
-                        if (person) {
+                        const result = await getObjectByIdHash(personId);
+                        const person = result?.obj;
+                        if (person && person.$type$ === 'Person') {
                             // Try name first (AI contacts have this), then fall back to email
                             displayName = person.name || person.email;
                             // For AI contacts with email but no name, try to get model display name
@@ -354,6 +355,224 @@ export class ContactsHandler {
         }
         catch (error) {
             console.error('[ContactsHandler] Failed to revoke contact VC:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    // ===== Group Management (using core Group objects) =====
+    /**
+     * Get all groups using core Group objects
+     */
+    async getGroups() {
+        try {
+            if (!this.nodeOneCore.leuteModel) {
+                return { success: false, error: 'Leute model not initialized' };
+            }
+            // Get all groups via LeuteModel (returns GroupModel[] - we extract Group data)
+            const groupModels = await this.nodeOneCore.leuteModel.groups();
+            const groupList = [];
+            for (const groupModel of groupModels) {
+                // Extract core Group data (avoid GroupModel abstractions)
+                const groupData = {
+                    id: groupModel.groupIdHash, // Core Group ID hash
+                    name: groupModel.internalGroupName,
+                    memberCount: groupModel.persons?.length || 0
+                };
+                groupList.push(groupData);
+            }
+            return { success: true, groups: groupList };
+        }
+        catch (error) {
+            console.error('[ContactsHandler] Failed to get groups:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    /**
+     * Create a new group using core Group object
+     */
+    async createGroup(name, memberIds) {
+        try {
+            // Create core Group object directly
+            // Create HashGroup with members first
+            const members = memberIds ? memberIds.map(id => ensureIdHash(id)) : [];
+            const hashGroup = await storeVersionedObject({
+                $type$: 'HashGroup',
+                members
+            });
+            // Create Group referencing HashGroup
+            const group = {
+                $type$: 'Group',
+                name: name || `group-${Date.now()}`,
+                hashGroup: hashGroup.idHash
+            };
+            // Store using one.core API
+            const result = await storeVersionedObject(group);
+            return {
+                success: true,
+                group: {
+                    id: result.idHash,
+                    name: group.name,
+                    memberCount: members.length
+                }
+            };
+        }
+        catch (error) {
+            console.error('[ContactsHandler] Failed to create group:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    /**
+     * Add contacts to a group (core Group pattern)
+     */
+    async addContactsToGroup(groupId, contactIds) {
+        try {
+            // Get current Group object
+            const groupIdHash = ensureIdHash(groupId);
+            const groupResult = await getObjectByIdHash(groupIdHash);
+            const group = groupResult.obj;
+            // Resolve HashGroup to get current members
+            const hashGroupResult = await getObjectByIdHash(group.hashGroup);
+            const members = [...hashGroupResult.obj.members];
+            // Add new members (deduplicate)
+            const existingPersons = new Set(members);
+            for (const contactId of contactIds) {
+                const personIdHash = ensureIdHash(contactId);
+                if (!existingPersons.has(personIdHash)) {
+                    members.push(personIdHash);
+                }
+            }
+            // Create new HashGroup with updated members
+            const newHashGroup = await storeVersionedObject({
+                $type$: 'HashGroup',
+                members
+            });
+            // Update Group to reference new HashGroup
+            await storeVersionedObject({
+                $type$: 'Group',
+                $versionHash$: group.$versionHash$,
+                name: group.name,
+                hashGroup: newHashGroup.idHash
+            });
+            return { success: true };
+        }
+        catch (error) {
+            console.error('[ContactsHandler] Failed to add contacts to group:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    /**
+     * Remove contacts from a group (core Group pattern)
+     */
+    async removeContactsFromGroup(groupId, contactIds) {
+        try {
+            // Get current Group object
+            const groupIdHash = ensureIdHash(groupId);
+            const groupResult = await getObjectByIdHash(groupIdHash);
+            const group = groupResult.obj;
+            // Resolve HashGroup to get current members
+            const hashGroupResult = await getObjectByIdHash(group.hashGroup);
+            let members = [...hashGroupResult.obj.members];
+            // Remove members
+            const contactSet = new Set(contactIds);
+            members = members.filter(personId => !contactSet.has(personId));
+            // Create new HashGroup with updated members
+            const newHashGroup = await storeVersionedObject({
+                $type$: 'HashGroup',
+                members
+            });
+            // Update Group to reference new HashGroup
+            await storeVersionedObject({
+                $type$: 'Group',
+                $versionHash$: group.$versionHash$,
+                name: group.name,
+                hashGroup: newHashGroup.idHash
+            });
+            return { success: true };
+        }
+        catch (error) {
+            console.error('[ContactsHandler] Failed to remove contacts from group:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    /**
+     * Get group members (core Group pattern)
+     */
+    async getGroupMembers(groupId) {
+        try {
+            if (!this.nodeOneCore.leuteModel) {
+                return { success: false, error: 'Leute model not initialized' };
+            }
+            // Get Group object
+            const groupIdHash = ensureIdHash(groupId);
+            const result = await getObjectByIdHash(groupIdHash);
+            const group = result.obj;
+            // Resolve HashGroup to get members
+            const hashGroupResult = await getObjectByIdHash(group.hashGroup);
+            const memberIds = hashGroupResult.obj.members;
+            // Get member details
+            const members = [];
+            const someoneObjects = await this.nodeOneCore.leuteModel.others();
+            for (const personIdHash of memberIds) {
+                const someone = someoneObjects.find((s) => s.mainIdentity() === personIdHash);
+                if (someone) {
+                    const profile = await someone.mainProfile();
+                    const name = profile?.personDescriptions?.find((d) => d.$type$ === 'PersonName')?.name || 'Unknown';
+                    members.push({
+                        id: personIdHash,
+                        name
+                    });
+                }
+            }
+            return { success: true, members };
+        }
+        catch (error) {
+            console.error('[ContactsHandler] Failed to get group members:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    /**
+     * Delete a group - NOTE: Groups cannot be truly deleted in ONE.core
+     * This marks the group as deleted by removing all members
+     */
+    async deleteGroup(groupId) {
+        try {
+            // Get Group object
+            const groupIdHash = ensureIdHash(groupId);
+            const result = await getObjectByIdHash(groupIdHash);
+            const group = result.obj;
+            // Create empty HashGroup (soft delete)
+            const emptyHashGroup = await storeVersionedObject({
+                $type$: 'HashGroup',
+                members: []
+            });
+            // Update Group to reference empty HashGroup
+            await storeVersionedObject({
+                $type$: 'Group',
+                $versionHash$: group.$versionHash$,
+                name: group.name,
+                hashGroup: emptyHashGroup.idHash
+            });
+            return { success: true };
+        }
+        catch (error) {
+            console.error('[ContactsHandler] Failed to delete group:', error);
             return {
                 success: false,
                 error: error.message

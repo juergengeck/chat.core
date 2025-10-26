@@ -1,15 +1,16 @@
 /**
- * IOM Handler (Pure Business Logic)
+ * Connection Handler (Pure Business Logic)
  *
- * Transport-agnostic handler for IoM operations.
+ * Transport-agnostic handler for connection, pairing, and instance management operations.
+ * Handles both device pairing (IoM) and partner pairing (IoP).
  * Delegates to one.models ConnectionsModel and ChannelManager.
  * Platform-specific operations (fs, storage) are injected.
  *
  * Can be used from both Electron IPC and Web Worker contexts.
  */
-export interface GetIOMInstancesRequest {
+export interface GetInstancesRequest {
 }
-export interface GetIOMInstancesResponse {
+export interface GetInstancesResponse {
     instances: Instance[];
 }
 export interface Instance {
@@ -36,12 +37,15 @@ export interface ReplicationInfo {
     errors: any[];
 }
 export interface CreatePairingInvitationRequest {
+    mode?: 'IoM' | 'IoP';
+    webUrl?: string;
 }
 export interface CreatePairingInvitationResponse {
     success: boolean;
     invitation?: {
         url: string;
         token: string;
+        mode: 'IoM' | 'IoP';
     };
     error?: string;
 }
@@ -60,26 +64,30 @@ export interface GetConnectionStatusResponse {
     syncing: boolean;
 }
 /**
- * IOMHandler - Pure business logic for IoM operations
+ * ConnectionHandler - Pure business logic for connection, pairing, and instance management
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  * - storageProvider: Platform-specific storage info provider (optional)
+ * - webUrl: Base URL for invitation web app (e.g., http://localhost:5173 for dev, https://lama.one for prod)
  */
-export declare class IOMHandler {
+export declare class ConnectionHandler {
     private nodeOneCore;
     private storageProvider;
-    constructor(nodeOneCore: any, storageProvider?: any);
+    private webUrl?;
+    constructor(nodeOneCore: any, storageProvider?: any, webUrl?: string);
     /**
-     * Get IOM instances - delegates to one.models
+     * Get instances - delegates to one.models
      */
-    getIOMInstances(request: GetIOMInstancesRequest): Promise<GetIOMInstancesResponse>;
+    getInstances(request: GetInstancesRequest): Promise<GetInstancesResponse>;
     /**
      * Create pairing invitation - delegates to ConnectionsModel.pairing
+     * Supports both IoM (device) and IoP (partner) invitation types
      */
     createPairingInvitation(request: CreatePairingInvitationRequest): Promise<CreatePairingInvitationResponse>;
     /**
      * Accept pairing invitation - delegates to ConnectionsModel.pairing
+     * Includes retry logic for reliability (following one.leute pattern)
      */
     acceptPairingInvitation(request: AcceptPairingInvitationRequest): Promise<AcceptPairingInvitationResponse>;
     /**
@@ -95,4 +103,4 @@ export declare class IOMHandler {
      */
     private getDefaultStorage;
 }
-//# sourceMappingURL=IOMHandler.d.ts.map
+//# sourceMappingURL=ConnectionHandler.d.ts.map

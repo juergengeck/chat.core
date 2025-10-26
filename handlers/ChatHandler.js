@@ -326,6 +326,13 @@ export class ChatHandler {
             const topic = await this.nodeOneCore.topicModel.createGroupTopic(name);
             const topicId = String(await topic.idHash());
             console.log('[ChatHandler] Created topic:', topicId);
+            // Configure channel for group conversations (one.leute pattern)
+            // This ensures Person/Profile objects arriving via CHUM are automatically registered
+            if (this.nodeOneCore.channelManager) {
+                this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topicId, true);
+                this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topicId, true);
+                console.log('[ChatHandler] ✅ Channel settings configured for automatic Person/Profile registration');
+            }
             return {
                 success: true,
                 data: {

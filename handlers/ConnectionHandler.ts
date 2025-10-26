@@ -1,7 +1,8 @@
 /**
- * IOM Handler (Pure Business Logic)
+ * Connection Handler (Pure Business Logic)
  *
- * Transport-agnostic handler for IoM operations.
+ * Transport-agnostic handler for connection, pairing, and instance management operations.
+ * Handles both device pairing (IoM) and partner pairing (IoP).
  * Delegates to one.models ConnectionsModel and ChannelManager.
  * Platform-specific operations (fs, storage) are injected.
  *
@@ -9,9 +10,9 @@
  */
 
 // Request/Response interfaces
-export interface GetIOMInstancesRequest {}
+export interface GetInstancesRequest {}
 
-export interface GetIOMInstancesResponse {
+export interface GetInstancesResponse {
   instances: Instance[];
 }
 
@@ -41,13 +42,17 @@ export interface ReplicationInfo {
   errors: any[];
 }
 
-export interface CreatePairingInvitationRequest {}
+export interface CreatePairingInvitationRequest {
+  mode?: 'IoM' | 'IoP'; // IoM = device pairing, IoP = partner pairing (default)
+  webUrl?: string; // Base URL for invitation web app (overrides constructor value)
+}
 
 export interface CreatePairingInvitationResponse {
   success: boolean;
   invitation?: {
     url: string;
     token: string;
+    mode: 'IoM' | 'IoP';
   };
   error?: string;
 }
@@ -70,25 +75,28 @@ export interface GetConnectionStatusResponse {
 }
 
 /**
- * IOMHandler - Pure business logic for IoM operations
+ * ConnectionHandler - Pure business logic for connection, pairing, and instance management
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  * - storageProvider: Platform-specific storage info provider (optional)
+ * - webUrl: Base URL for invitation web app (e.g., http://localhost:5173 for dev, https://lama.one for prod)
  */
-export class IOMHandler {
+export class ConnectionHandler {
   private nodeOneCore: any;
   private storageProvider: any;
+  private webUrl?: string;
 
-  constructor(nodeOneCore: any, storageProvider?: any) {
+  constructor(nodeOneCore: any, storageProvider?: any, webUrl?: string) {
     this.nodeOneCore = nodeOneCore;
     this.storageProvider = storageProvider;
+    this.webUrl = webUrl;
   }
 
   /**
-   * Get IOM instances - delegates to one.models
+   * Get instances - delegates to one.models
    */
-  async getIOMInstances(request: GetIOMInstancesRequest): Promise<GetIOMInstancesResponse> {
+  async getInstances(request: GetInstancesRequest): Promise<GetInstancesResponse> {
     try {
       const instances: Instance[] = [];
 
@@ -122,13 +130,14 @@ export class IOMHandler {
 
       return { instances };
     } catch (error) {
-      console.error('[IOMHandler] Failed to get instances:', error);
+      console.error('[ConnectionHandler] Failed to get instances:', error);
       throw error;
     }
   }
 
   /**
    * Create pairing invitation - delegates to ConnectionsModel.pairing
+   * Supports both IoM (device) and IoP (partner) invitation types
    */
   async createPairingInvitation(request: CreatePairingInvitationRequest): Promise<CreatePairingInvitationResponse> {
     try {
@@ -146,7 +155,10 @@ export class IOMHandler {
         };
       }
 
-      console.log('[IOMHandler] Creating pairing invitation via ConnectionsModel...');
+      // Default to IoP (partner) if not specified
+      const mode = request.mode || 'IoP';
+
+      console.log(`[ConnectionHandler] Creating ${mode} pairing invitation via ConnectionsModel...`);
 
       // Use one.models pairing API
       const invitation = await this.nodeOneCore.connectionsModel.pairing.createInvitation();
@@ -158,7 +170,8 @@ export class IOMHandler {
         };
       }
 
-      console.log('[IOMHandler] Invitation created:', {
+      console.log('[ConnectionHandler] Invitation created:', {
+        mode,
         url: invitation.url,
         publicKey: invitation.publicKey
       });
@@ -166,19 +179,44 @@ export class IOMHandler {
       // Encode the entire invitation object for the URL fragment
       const invitationToken = encodeURIComponent(JSON.stringify(invitation));
 
-      // Construct the invitation URL (platform-specific domain)
-      const eddaDomain = 'edda.dev.refinio.one';
-      const invitationUrl = `https://${eddaDomain}/invites/invitePartner/?invited=true/#${invitationToken}`;
+      // Use web URL from request, then constructor, then derive from commServer
+      let baseUrl: string;
+      if (request.webUrl) {
+        baseUrl = request.webUrl;
+      } else if (this.webUrl) {
+        baseUrl = this.webUrl;
+      } else {
+        // Fallback: derive from commServer URL
+        const commServerUrl = invitation.url || '';
+        const eddaDomain = commServerUrl.includes('dev.refinio.one')
+          ? 'edda.dev.refinio.one'
+          : 'edda.one';
+        baseUrl = `https://${eddaDomain}`;
+      }
+
+      // Construct the invitation URL with proper path based on mode
+      // IoM: /invites/inviteDevice/?invited=true (for device pairing)
+      // IoP: /invites/invitePartner/?invited=true (for partner pairing)
+      const invitePath = mode === 'IoM' ? 'inviteDevice' : 'invitePartner';
+      const invitationUrl = `${baseUrl}/invites/${invitePath}/?invited=true/#${invitationToken}`;
+
+      console.log('[ConnectionHandler] Generated invitation URL:', {
+        webUrl: this.webUrl,
+        baseUrl,
+        mode,
+        invitePath
+      });
 
       return {
         success: true,
         invitation: {
           url: invitationUrl,
-          token: invitationToken
+          token: invitationToken,
+          mode
         }
       };
     } catch (error) {
-      console.error('[IOMHandler] Failed to create pairing invitation:', error);
+      console.error('[ConnectionHandler] Failed to create pairing invitation:', error);
       return {
         success: false,
         error: (error as Error).message || 'Failed to create pairing invitation'
@@ -188,6 +226,7 @@ export class IOMHandler {
 
   /**
    * Accept pairing invitation - delegates to ConnectionsModel.pairing
+   * Includes retry logic for reliability (following one.leute pattern)
    */
   async acceptPairingInvitation(request: AcceptPairingInvitationRequest): Promise<AcceptPairingInvitationResponse> {
     try {
@@ -205,7 +244,7 @@ export class IOMHandler {
         };
       }
 
-      console.log('[IOMHandler] Accepting pairing invitation:', request.invitationUrl);
+      console.log('[ConnectionHandler] Accepting pairing invitation:', request.invitationUrl);
 
       // Parse the invitation from the URL fragment
       const hashIndex = request.invitationUrl.indexOf('#');
@@ -223,7 +262,7 @@ export class IOMHandler {
       try {
         invitation = JSON.parse(invitationJson);
       } catch (error) {
-        console.error('[IOMHandler] Failed to parse invitation:', error);
+        console.error('[ConnectionHandler] Failed to parse invitation:', error);
         return {
           success: false,
           error: 'Invalid invitation format'
@@ -239,20 +278,44 @@ export class IOMHandler {
         };
       }
 
-      console.log('[IOMHandler] Accepting invitation with token:', String(token).substring(0, 20) + '...');
-      console.log('[IOMHandler] Connection URL:', url);
+      console.log('[ConnectionHandler] Accepting invitation with token:', String(token).substring(0, 20) + '...');
+      console.log('[ConnectionHandler] Connection URL:', url);
 
-      // Use one.models pairing API
-      await this.nodeOneCore.connectionsModel.pairing.connectUsingInvitation(invitation);
+      // Retry logic following one.leute pattern
+      const maxTries = 4;
+      const retryDelay = 2000; // 2 seconds
+      let lastError: Error | undefined;
 
-      console.log('[IOMHandler] ✅ Connected using invitation');
+      for (let i = 0; i <= maxTries; i++) {
+        try {
+          // Use one.models pairing API
+          await this.nodeOneCore.connectionsModel.pairing.connectUsingInvitation(invitation);
 
+          console.log('[ConnectionHandler] ✅ Connected using invitation');
+
+          return {
+            success: true,
+            message: 'Invitation accepted successfully'
+          };
+        } catch (error) {
+          console.error(`[ConnectionHandler] Pairing attempt ${i + 1}/${maxTries + 1} failed:`, error);
+          lastError = error as Error;
+
+          // Wait before retry (except on last attempt)
+          if (i < maxTries) {
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+          }
+        }
+      }
+
+      // All retries failed
+      console.error('[ConnectionHandler] ❌ Failed to accept invitation after all retries');
       return {
-        success: true,
-        message: 'Invitation accepted successfully'
+        success: false,
+        error: lastError?.message || 'Failed to accept pairing invitation after all retries'
       };
     } catch (error) {
-      console.error('[IOMHandler] Failed to accept invitation:', error);
+      console.error('[ConnectionHandler] Failed to accept invitation:', error);
       return {
         success: false,
         error: (error as Error).message || 'Failed to accept pairing invitation'
@@ -268,7 +331,7 @@ export class IOMHandler {
       const status = this.getConnectionStatusFromModel();
       return status;
     } catch (error) {
-      console.error('[IOMHandler] Failed to get connection status:', error);
+      console.error('[ConnectionHandler] Failed to get connection status:', error);
       return {
         connections: [],
         syncing: false
