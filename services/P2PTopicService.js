@@ -4,6 +4,10 @@
  * Platform-agnostic service for creating and managing P2P (one-to-one) topics/channels.
  * Used by platforms after successful pairing to enable immediate messaging.
  */
+// Import ONE.core access functions
+import { createAccess } from '@refinio/one.core/lib/access.js';
+import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 /**
  * Create a P2P topic for two participants
  *
@@ -51,6 +55,42 @@ export async function createP2PTopic(topicModel, localPersonId, remotePersonId) 
     }
 }
 /**
+ * Grant access to a P2P channel for the two participants
+ *
+ * @param channelId - The P2P channel ID (format: id1<->id2)
+ * @param person1 - First participant's person ID
+ * @param person2 - Second participant's person ID
+ * @returns Promise<void>
+ */
+async function grantP2PChannelAccess(channelId, person1, person2) {
+    console.log('[P2PTopicService] Granting access for P2P channel:', channelId);
+    console.log('[P2PTopicService]   Person 1:', person1?.substring(0, 8));
+    console.log('[P2PTopicService]   Person 2:', person2?.substring(0, 8));
+    try {
+        // Calculate channel info hash for P2P channel (null owner)
+        const channelIdHash = await calculateIdHashOfObj({
+            $type$: 'ChannelInfo',
+            id: channelId,
+            owner: undefined // null owner becomes undefined in the hash calculation
+        });
+        // Grant access to both participants individually (not via groups)
+        await createAccess([{
+                id: channelIdHash,
+                person: [person1, person2], // Only these two people
+                group: [], // NO group access!
+                mode: SET_ACCESS_MODE.ADD
+            }]);
+        console.log('[P2PTopicService] ✅ Access granted to P2P channel for both participants');
+    }
+    catch (error) {
+        // Access might already exist, that's ok
+        if (!error.message?.includes('already exists')) {
+            console.error('[P2PTopicService] Failed to grant P2P channel access:', error);
+            throw error;
+        }
+    }
+}
+/**
  * Automatically create P2P topic after pairing success
  *
  * @param params - Parameters
@@ -79,6 +119,8 @@ export async function autoCreateP2PTopicAfterPairing(params) {
             : `${remotePersonId}<->${localPersonId}`;
         // Ensure the channel exists in ChannelManager
         await channelManager.createChannel(channelId, null); // null owner for P2P shared channel
+        // Grant access rights to both participants (person-based, not group-based)
+        await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
         console.log('[P2PTopicService] ✅ P2P topic and channel ready for messaging');
         // If we initiated the pairing, optionally send a welcome message
         if (sendWelcomeMessage) {
@@ -160,6 +202,8 @@ export async function ensureP2PTopicForIncomingMessage(params) {
             const topicRoom = await createP2PTopic(topicModel, localPersonId, remotePersonId);
             // Ensure channel exists
             await channelManager.createChannel(channelId, null);
+            // Grant access rights to both participants
+            await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
             console.log('[P2PTopicService] ✅ Created P2P topic for incoming message');
             return topicRoom;
         }
