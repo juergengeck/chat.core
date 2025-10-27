@@ -353,50 +353,48 @@ export class TopicGroupManager {
         // Share the topic with the group
         await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
         console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} access to topic ${topicId}`);
-        // Create channels for ALL participants in group chats
-        // In group chats, each participant has their own channel they write to
-        // All participants can read from all channels (via group access)
-        for (const participantId of participantIds) {
-            if (participantId && this.oneCore.channelManager) {
-                try {
-                    // Check if channel already exists before creating
-                    const hasChannel = await this.oneCore.channelManager.hasChannel(topicId, participantId);
-                    if (!hasChannel) {
-                        // Create a channel owned by this participant
-                        await this.oneCore.channelManager.createChannel(topicId, participantId);
-                        console.log(`[TopicGroupManager] Created channel for participant ${String(participantId).substring(0, 8)}`);
-                    }
-                    else {
-                        console.log(`[TopicGroupManager] Channel already exists for participant ${String(participantId).substring(0, 8)}`);
-                    }
-                    // Grant the group access to this participant's channel
-                    const channelHash = await this.storageDeps.calculateIdHashOfObj({
-                        $type$: 'ChannelInfo',
-                        id: topicId,
-                        owner: participantId
-                    });
-                    await this.storageDeps.createAccess([{
-                            id: channelHash,
-                            person: [],
-                            group: [groupIdHash],
-                            mode: SET_ACCESS_MODE.ADD
-                        }]);
-                    console.log(`[TopicGroupManager] Granted group access to channel owned by ${String(participantId).substring(0, 8)}`);
+        // Create channel ONLY for the local owner
+        // Other participants will create their own channels when they receive the Group via CHUM
+        if (this.oneCore.channelManager) {
+            try {
+                // Check if channel already exists before creating
+                const hasChannel = await this.oneCore.channelManager.hasChannel(topicId, this.oneCore.ownerId);
+                if (!hasChannel) {
+                    // Create a channel owned by the local owner
+                    await this.oneCore.channelManager.createChannel(topicId, this.oneCore.ownerId);
+                    console.log(`[TopicGroupManager] Created channel for owner ${String(this.oneCore.ownerId).substring(0, 8)}`);
                 }
-                catch (error) {
-                    console.warn(`[TopicGroupManager] Channel creation for ${String(participantId).substring(0, 8)} failed:`, error.message);
+                else {
+                    console.log(`[TopicGroupManager] Channel already exists for owner`);
                 }
+                // Grant the group access to the owner's channel
+                const channelHash = await this.storageDeps.calculateIdHashOfObj({
+                    $type$: 'ChannelInfo',
+                    id: topicId,
+                    owner: this.oneCore.ownerId
+                });
+                await this.storageDeps.createAccess([{
+                        id: channelHash,
+                        person: [],
+                        group: [groupIdHash],
+                        mode: SET_ACCESS_MODE.ADD
+                    }]);
+                console.log(`[TopicGroupManager] Granted group access to owner's channel`);
+            }
+            catch (error) {
+                console.error(`[TopicGroupManager] Channel creation for owner failed:`, error.message);
+                throw error;
             }
         }
         console.log(`[TopicGroupManager] Topic ${topicId} created with group ${String(groupIdHash).substring(0, 8)}`);
-        console.log(`[TopicGroupManager] Created channels for all ${participantIds.length} participants`);
+        console.log(`[TopicGroupManager] Created channel for owner - other participants will create their own channels`);
         // IMPORTANT: Architecture:
         // - ONE topic ID for the conversation
         // - MULTIPLE channels (one per participant) with the SAME topic ID
         // - Each participant writes to their OWN channel ONLY
         // - All participants can READ from all channels (via group access)
-        // - leute.one's RawChannelEntriesCache only reads from ONE channel at a time
-        console.log(`[TopicGroupManager] All participants have their own channels with topic ID: ${topicId}`);
+        // - Each instance creates its OWN channel when it receives the Group via CHUM
+        console.log(`[TopicGroupManager] Owner has channel, participants will create theirs when they receive the Group`);
         return topic;
     }
     /**
@@ -636,6 +634,99 @@ export class TopicGroupManager {
             console.error(`[TopicGroupManager] Failed to ensure participant channel:`, error);
             throw error;
         }
+    }
+    /**
+     * Initialize group sync listener
+     * Listens for Group objects received via CHUM and creates channels for them
+     */
+    initializeGroupSyncListener() {
+        console.log(`[TopicGroupManager] Initializing group sync listener...`);
+        // Import onVersionedObj event from ONE.core
+        import('@refinio/one.core/lib/storage-versioned-objects.js').then(({ onVersionedObj }) => {
+            onVersionedObj.addListener(async (result) => {
+                // Only process Group objects
+                if (result.obj.$type$ !== 'Group') {
+                    return;
+                }
+                await this.handleReceivedGroup(result.idHash, result.obj);
+            });
+            console.log(`[TopicGroupManager] ✅ Group sync listener initialized`);
+        }).catch(error => {
+            console.error(`[TopicGroupManager] Failed to initialize group sync listener:`, error);
+        });
+    }
+    /**
+     * Handle a received Group object
+     * Called either from the event listener or explicitly when a group is received
+     */
+    async handleReceivedGroup(groupIdHash, group) {
+        console.log(`[TopicGroupManager] Processing received Group: ${group.name}`);
+        try {
+            // Only process conversation groups
+            const topicIdMatch = group.name?.match(/^conversation-(.+)$/);
+            if (!topicIdMatch) {
+                return; // Not a conversation group
+            }
+            const topicId = topicIdMatch[1];
+            // Load the HashGroup to get members
+            const hashGroupResult = await this.storageDeps.getObjectByIdHash(group.hashGroup);
+            const members = hashGroupResult.obj.members || [];
+            // Check if we're a member of this group
+            const isMember = members.some((m) => String(m) === String(this.oneCore.ownerId));
+            if (!isMember) {
+                console.log(`[TopicGroupManager] Not a member of group ${group.name}`);
+                return;
+            }
+            console.log(`[TopicGroupManager] We are a member of group for topic ${topicId}`);
+            // Cache the group
+            this.conversationGroups.set(topicId, groupIdHash);
+            // Check if we have a channel for this topic
+            const hasChannel = await this.oneCore.channelManager.hasChannel(topicId, this.oneCore.ownerId);
+            if (!hasChannel) {
+                console.log(`[TopicGroupManager] Creating our owned channel for topic ${topicId}`);
+                // Create our owned channel
+                await this.oneCore.channelManager.createChannel(topicId, this.oneCore.ownerId);
+                // Grant the group access to our channel
+                const channelHash = await this.storageDeps.calculateIdHashOfObj({
+                    $type$: 'ChannelInfo',
+                    id: topicId,
+                    owner: this.oneCore.ownerId
+                });
+                await this.storageDeps.createAccess([{
+                        id: channelHash,
+                        person: [],
+                        group: [groupIdHash],
+                        mode: SET_ACCESS_MODE.ADD
+                    }]);
+                console.log(`[TopicGroupManager] ✅ Created owned channel for topic ${topicId}`);
+                // Check if topic exists locally, if not create it
+                try {
+                    await this.oneCore.topicModel.topics.queryById(topicId);
+                }
+                catch (error) {
+                    // Topic doesn't exist locally - create a reference
+                    console.log(`[TopicGroupManager] Creating local topic reference for ${topicId}`);
+                    const topic = await this.oneCore.topicModel.createGroupTopic(topicId, topicId, this.oneCore.ownerId);
+                    await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
+                    console.log(`[TopicGroupManager] ✅ Created local topic reference`);
+                }
+            }
+            else {
+                console.log(`[TopicGroupManager] Already have channel for topic ${topicId}`);
+            }
+        }
+        catch (error) {
+            console.error(`[TopicGroupManager] Error processing received group:`, error);
+        }
+    }
+    /**
+     * @deprecated This method is deprecated - use initializeGroupSyncListener() instead
+     * Kept for backwards compatibility
+     */
+    async syncReceivedGroups() {
+        console.log(`[TopicGroupManager] syncReceivedGroups() called - this method is deprecated`);
+        console.log(`[TopicGroupManager] Group sync now happens automatically via onVersionedObj listener`);
+        console.log(`[TopicGroupManager] Call initializeGroupSyncListener() during initialization instead`);
     }
     /**
      * @deprecated Do not use - creates duplicate conversations

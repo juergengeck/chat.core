@@ -58,6 +58,10 @@ export async function createProfileAndSomeoneForPerson(personId, leuteModel, pro
             other: [...new Set([...leuteResult.obj.other, someone.idHash])]
         };
         await storeVersionedObject(updatedLeute);
+        // Reload the model to reflect the updated contacts list
+        if (typeof leuteModel.loadLatestVersion === 'function') {
+            await leuteModel.loadLatestVersion();
+        }
         console.log('[ContactCreation]   └─ ✅ Contact creation complete!');
         return someone;
     }
@@ -164,6 +168,10 @@ export async function handleReceivedProfile(personId, profileData, leuteModel) {
             other: [...new Set([...leuteResult.obj.other, someone.idHash])]
         };
         await storeVersionedObject(updatedLeute);
+        // Reload the model to reflect the updated contacts list
+        if (typeof leuteModel.loadLatestVersion === 'function') {
+            await leuteModel.loadLatestVersion();
+        }
         console.log('[ContactCreation] ✅ Someone added to contacts list');
         // Success - remove from processed profiles
         processedProfiles.delete(personId.toString());

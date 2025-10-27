@@ -79,6 +79,11 @@ export async function createProfileAndSomeoneForPerson(
         };
 
         await storeVersionedObject(updatedLeute as any);
+
+        // Reload the model to reflect the updated contacts list
+        if (typeof (leuteModel as any).loadLatestVersion === 'function') {
+            await (leuteModel as any).loadLatestVersion();
+        }
         console.log('[ContactCreation]   └─ ✅ Contact creation complete!');
 
         return someone;
@@ -206,6 +211,11 @@ export async function handleReceivedProfile(
         };
 
         await storeVersionedObject(updatedLeute as any);
+
+        // Reload the model to reflect the updated contacts list
+        if (typeof (leuteModel as any).loadLatestVersion === 'function') {
+            await (leuteModel as any).loadLatestVersion();
+        }
         console.log('[ContactCreation] ✅ Someone added to contacts list');
 
         // Success - remove from processed profiles

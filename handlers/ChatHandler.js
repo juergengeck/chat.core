@@ -315,6 +315,9 @@ export class ChatHandler {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
             }
+            if (!this.nodeOneCore.topicGroupManager) {
+                throw new Error('TopicGroupManager not initialized');
+            }
             const userId = this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
             if (!userId) {
                 throw new Error('User not authenticated');
@@ -322,10 +325,11 @@ export class ChatHandler {
             const type = request.type || 'direct';
             const participants = request.participants || [];
             const name = request.name || `Conversation ${Date.now()}`;
-            // Create topic using TopicModel
-            const topic = await this.nodeOneCore.topicModel.createGroupTopic(name);
-            const topicId = String(await topic.idHash());
-            console.log('[ChatHandler] Created topic:', topicId);
+            // Generate deterministic topic ID for the conversation
+            const topicId = `group-${Date.now()}-${String(userId).substring(0, 8)}`;
+            // Create topic using TopicGroupManager (creates group, grants access, creates owner's channel)
+            const topic = await this.nodeOneCore.topicGroupManager.createGroupTopic(name, topicId, participants);
+            console.log('[ChatHandler] Created topic with group access:', topicId);
             // Configure channel for group conversations (one.leute pattern)
             // This ensures Person/Profile objects arriving via CHUM are automatically registered
             if (this.nodeOneCore.channelManager) {

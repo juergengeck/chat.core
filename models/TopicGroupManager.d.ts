@@ -17,6 +17,7 @@ export interface TopicGroupManagerStorageDeps {
     storeVersionedObject: (obj: any) => Promise<any>;
     getObjectByIdHash: (idHash: SHA256IdHash<any>) => Promise<any>;
     getObject: (hash: SHA256Hash<any>) => Promise<any>;
+    getAllOfType: (type: string) => Promise<any[]>;
     createAccess: (accessRequests: any[]) => Promise<any>;
     calculateIdHashOfObj: (obj: any) => Promise<SHA256IdHash<any>>;
     calculateHashOfObj: (obj: any) => Promise<SHA256Hash<any>>;
@@ -123,6 +124,21 @@ export declare class TopicGroupManager {
      * @param {string} groupIdHash - The group's ID hash
      */
     ensureParticipantChannel(topicId: any, groupIdHash: any): Promise<any>;
+    /**
+     * Initialize group sync listener
+     * Listens for Group objects received via CHUM and creates channels for them
+     */
+    initializeGroupSyncListener(): void;
+    /**
+     * Handle a received Group object
+     * Called either from the event listener or explicitly when a group is received
+     */
+    private handleReceivedGroup;
+    /**
+     * @deprecated This method is deprecated - use initializeGroupSyncListener() instead
+     * Kept for backwards compatibility
+     */
+    syncReceivedGroups(): Promise<void>;
     /**
      * @deprecated Do not use - creates duplicate conversations
      * P2P conversations should always use personId1<->personId2 format
