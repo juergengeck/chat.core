@@ -51,6 +51,76 @@ export class TopicGroupManager {
   }
 
   /**
+   * Create an objectFilter for CHUM sync that validates Group signatures
+   * This filter ensures Groups are cryptographically signed by trusted members
+   *
+   * @returns ObjectFilter function for use in ConnectionsModel config
+   */
+  createObjectFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean> {
+    return async (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string): Promise<boolean> => {
+      if (type === 'Group') {
+        try {
+          console.log(`[TopicGroupManager] objectFilter: Validating Group signature for ${String(hash).substring(0, 8)}`);
+
+          // Import signature utilities
+          const { getSignatures, verifySignatureWithMultipleHexKeys } = await import('@refinio/one.models/lib/misc/Signature.js');
+          const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+
+          // Get all signatures for this Group
+          const signatures = await getSignatures(hash as SHA256Hash<any>);
+
+          if (signatures.length === 0) {
+            console.log(`[TopicGroupManager] ❌ No signature found for Group ${String(hash).substring(0, 8)}`);
+            return false;
+          }
+
+          // Get the Group object to check if signer is a member
+          const group: any = await getIdObject(hash as SHA256IdHash<any>);
+          const hashGroup: any = await getIdObject(group.hashGroup);
+          const groupMembers = hashGroup.members;
+
+          // For each signature, validate: (1) trust in signer (2) cryptographic validity
+          for (const signature of signatures) {
+            // Trust check: Is the signer a Group member?
+            // In this implementation, Group membership implies trust
+            // Alternative: Check TrustKeysCertificate or trusted contacts
+            const isTrusted = groupMembers.includes(signature.issuer);
+
+            if (!isTrusted) {
+              console.log(`[TopicGroupManager] ⚠️  Signature from non-member ${String(signature.issuer).substring(0, 8)}`);
+              continue;
+            }
+
+            // Get the public signing keys for validation
+            const profile: any = await this.oneCore.leuteModel.getMainProfile(signature.issuer);
+            if (!profile || !profile.signKeys || profile.signKeys.length === 0) {
+              console.log(`[TopicGroupManager] ⚠️  No signing keys for ${String(signature.issuer).substring(0, 8)}`);
+              continue;
+            }
+
+            // Cryptographic validation: Verify signature with signer's public keys
+            const matchedKey = verifySignatureWithMultipleHexKeys(profile.signKeys, signature);
+
+            if (matchedKey) {
+              console.log(`[TopicGroupManager] ✅ Valid Group signature by trusted member ${String(signature.issuer).substring(0, 8)}`);
+              return true;
+            }
+          }
+
+          console.log(`[TopicGroupManager] ❌ No valid trusted signature for Group ${String(hash).substring(0, 8)}`);
+          return false;
+        } catch (error) {
+          console.error(`[TopicGroupManager] Error validating Group signature:`, error);
+          return false;
+        }
+      }
+
+      // Allow all other object types (Access objects are handled by ONE.core)
+      return true;
+    };
+  }
+
+  /**
    * Check if a conversation has a group
    */
   hasConversationGroup(conversationId: string): boolean {
@@ -426,13 +496,28 @@ export class TopicGroupManager {
     // Cache the group
     this.conversationGroups.set(topicId, groupIdHash);
 
-    // Grant all members access to the group object itself
-    await this.storageDeps.createAccess([{
-      id: groupIdHash,
-      person: participantIds,  // All members get direct access to see the group
-      group: [],
-      mode: SET_ACCESS_MODE.ADD
-    }]);
+    // Create a cryptographic signature for the Group (attestation of validity)
+    const { sign } = await import('@refinio/one.models/lib/misc/Signature.js');
+    const signatureResult = await sign(groupIdHash, this.oneCore.ownerId);
+    console.log(`[TopicGroupManager] ✅ Created signature ${String(signatureResult.hash).substring(0, 8)} for Group ${String(groupIdHash).substring(0, 8)}`);
+
+    // Grant all participants access to both the Group and its Signature
+    await this.storageDeps.createAccess([
+      {
+        id: groupIdHash,
+        person: participantIds,  // All participants get access to the Group
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        object: signatureResult.hash,  // Also grant access to the Signature
+        person: participantIds,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      }
+    ]);
+
+    console.log(`[TopicGroupManager] ✅ Group and Signature access granted to ${participantIds.length} participants`);
 
     // Create the topic using TopicModel
     if (!this.oneCore.topicModel) {

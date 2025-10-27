@@ -39,6 +39,13 @@ export declare class TopicGroupManager {
     private storageDeps;
     constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps);
     /**
+     * Create an objectFilter for CHUM sync that validates Group signatures
+     * This filter ensures Groups are cryptographically signed by trusted members
+     *
+     * @returns ObjectFilter function for use in ConnectionsModel config
+     */
+    createObjectFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean>;
+    /**
      * Check if a conversation has a group
      */
     hasConversationGroup(conversationId: string): boolean;
