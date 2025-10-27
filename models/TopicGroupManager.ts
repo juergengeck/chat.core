@@ -60,57 +60,42 @@ export class TopicGroupManager {
     return async (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string): Promise<boolean> => {
       if (type === 'Group') {
         try {
-          console.log(`[TopicGroupManager] objectFilter: Validating Group signature for ${String(hash).substring(0, 8)}`);
+          console.log(`[TopicGroupManager] objectFilter: Validating Group certificate for ${String(hash).substring(0, 8)}`);
 
-          // Import signature utilities
-          const { getSignatures, verifySignatureWithMultipleHexKeys } = await import('@refinio/one.models/lib/misc/Signature.js');
-          const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+          // Get list of people we trust (ourselves + people we've paired with)
+          const knownPeople = await this.oneCore.leuteModel.others();
+          const myId = await this.oneCore.leuteModel.myMainIdentity();
+          const trustedPeople = [myId, ...knownPeople];
 
-          // Get all signatures for this Group
-          const signatures = await getSignatures(hash as SHA256Hash<any>);
+          // Check if this Group is affirmed by any trusted person using the certificate system
+          const trust = this.oneCore.leuteModel.trust;
 
-          if (signatures.length === 0) {
-            console.log(`[TopicGroupManager] ❌ No signature found for Group ${String(hash).substring(0, 8)}`);
+          // Get all affirmation certificates for this Group
+          const affirmedBy = await trust.affirmedBy(hash as SHA256Hash<any>);
+
+          if (affirmedBy.length === 0) {
+            console.log(`[TopicGroupManager] ❌ No AffirmationCertificate found for Group ${String(hash).substring(0, 8)}`);
             return false;
           }
 
-          // Get the Group object to check if signer is a member
-          const group: any = await getIdObject(hash as SHA256IdHash<any>);
-          const hashGroup: any = await getIdObject(group.hashGroup);
-          const groupMembers = hashGroup.members;
-
-          // For each signature, validate: (1) trust in signer (2) cryptographic validity
-          for (const signature of signatures) {
-            // Trust check: Is the signer a Group member?
-            // In this implementation, Group membership implies trust
-            // Alternative: Check TrustKeysCertificate or trusted contacts
-            const isTrusted = groupMembers.includes(signature.issuer);
-
-            if (!isTrusted) {
-              console.log(`[TopicGroupManager] ⚠️  Signature from non-member ${String(signature.issuer).substring(0, 8)}`);
-              continue;
-            }
-
-            // Get the public signing keys for validation
-            const profile: any = await this.oneCore.leuteModel.getMainProfile(signature.issuer);
-            if (!profile || !profile.signKeys || profile.signKeys.length === 0) {
-              console.log(`[TopicGroupManager] ⚠️  No signing keys for ${String(signature.issuer).substring(0, 8)}`);
-              continue;
-            }
-
-            // Cryptographic validation: Verify signature with signer's public keys
-            const matchedKey = verifySignatureWithMultipleHexKeys(profile.signKeys, signature);
-
-            if (matchedKey) {
-              console.log(`[TopicGroupManager] ✅ Valid Group signature by trusted member ${String(signature.issuer).substring(0, 8)}`);
-              return true;
+          // Check if any of the affirmers are trusted
+          for (const affirmerId of affirmedBy) {
+            if (trustedPeople.includes(affirmerId)) {
+              // Verify the certificate is actually valid (signature checks, etc)
+              const isAffirmed = await trust.isAffirmedBy(hash as SHA256Hash<any>, affirmerId);
+              if (isAffirmed) {
+                console.log(`[TopicGroupManager] ✅ Valid AffirmationCertificate for Group ${String(hash).substring(0, 8)} by trusted person ${String(affirmerId).substring(0, 8)}`);
+                return true;
+              }
+            } else {
+              console.log(`[TopicGroupManager] ⚠️  Certificate from unknown person ${String(affirmerId).substring(0, 8)}`);
             }
           }
 
-          console.log(`[TopicGroupManager] ❌ No valid trusted signature for Group ${String(hash).substring(0, 8)}`);
+          console.log(`[TopicGroupManager] ❌ No valid trusted certificate for Group ${String(hash).substring(0, 8)}`);
           return false;
         } catch (error) {
-          console.error(`[TopicGroupManager] Error validating Group signature:`, error);
+          console.error(`[TopicGroupManager] Error validating Group certificate:`, error);
           return false;
         }
       }
@@ -496,12 +481,18 @@ export class TopicGroupManager {
     // Cache the group
     this.conversationGroups.set(topicId, groupIdHash);
 
-    // Create a cryptographic signature for the Group (attestation of validity)
-    const { sign } = await import('@refinio/one.models/lib/misc/Signature.js');
-    const signatureResult = await sign(groupIdHash, this.oneCore.ownerId);
-    console.log(`[TopicGroupManager] ✅ Created signature ${String(signatureResult.hash).substring(0, 8)} for Group ${String(groupIdHash).substring(0, 8)}`);
+    // Create an AffirmationCertificate for the Group (cryptographic attestation of validity)
+    // This creates: License + Certificate + Signature (all unversioned objects)
+    const certResult = await this.oneCore.leuteModel.trust.certify(
+      'AffirmationCertificate',
+      { data: groupIdHash },
+      this.oneCore.ownerId
+    );
+    console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for Group ${String(groupIdHash).substring(0, 8)}`);
+    console.log(`[TopicGroupManager] ✅ Signature: ${String(certResult.signature.hash).substring(0, 8)}, License: ${String(certResult.license.hash).substring(0, 8)}`);
 
-    // Grant all participants access to both the Group and its Signature
+    // Grant all participants access to the Group, Certificate, Signature, and License
+    // All of these need to sync to participants so they can validate the Group
     await this.storageDeps.createAccess([
       {
         id: groupIdHash,
@@ -510,14 +501,26 @@ export class TopicGroupManager {
         mode: SET_ACCESS_MODE.ADD
       },
       {
-        object: signatureResult.hash,  // Also grant access to the Signature
+        object: certResult.certificate.hash,  // Grant access to the AffirmationCertificate
+        person: participantIds,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        object: certResult.signature.hash,  // Grant access to the Signature
+        person: participantIds,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        object: certResult.license.hash,  // Grant access to the License
         person: participantIds,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       }
     ]);
 
-    console.log(`[TopicGroupManager] ✅ Group and Signature access granted to ${participantIds.length} participants`);
+    console.log(`[TopicGroupManager] ✅ Group, Certificate, Signature, and License access granted to ${participantIds.length} participants`);
 
     // Create the topic using TopicModel
     if (!this.oneCore.topicModel) {
