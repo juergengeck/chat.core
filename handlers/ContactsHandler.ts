@@ -6,11 +6,15 @@
  * Pattern based on refinio.api handler architecture.
  */
 
-import { Group, Person } from '@refinio/one.core/lib/recipes.js';
+import { Group, Person, HashGroup } from '@refinio/one.core/lib/recipes.js';
 import {
   storeVersionedObject,
   getObjectByIdHash
 } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import {
+  storeUnversionedObject,
+  getObject
+} from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { ensureIdHash, SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 
@@ -488,17 +492,18 @@ export class ContactsHandler {
     try {
       // Create core Group object directly
       // Create HashGroup with members first
-      const members = memberIds ? memberIds.map(id => ensureIdHash(id)) : [];
-      const hashGroup = await storeVersionedObject({
+      const members: SHA256IdHash<Person>[] = memberIds ? memberIds.map(id => ensureIdHash<Person>(id)) : [];
+      const hashGroupObj: HashGroup = {
         $type$: 'HashGroup',
         members
-      });
+      };
+      const hashGroup = await storeUnversionedObject(hashGroupObj);
 
       // Create Group referencing HashGroup
       const group: Group = {
         $type$: 'Group',
         name: name || `group-${Date.now()}`,
-        hashGroup: hashGroup.idHash
+        hashGroup: hashGroup.hash
       };
 
       // Store using one.core API
@@ -532,8 +537,8 @@ export class ContactsHandler {
       const group: Group = groupResult.obj;
 
       // Resolve HashGroup to get current members
-      const hashGroupResult = await getObjectByIdHash(group.hashGroup);
-      const members = [...(hashGroupResult.obj as any).members];
+      const hashGroupResult = await getObject(group.hashGroup);
+      const members = [...hashGroupResult.members];
 
       // Add new members (deduplicate)
       const existingPersons = new Set(members);
@@ -545,7 +550,7 @@ export class ContactsHandler {
       }
 
       // Create new HashGroup with updated members
-      const newHashGroup = await storeVersionedObject({
+      const newHashGroup = await storeUnversionedObject({
         $type$: 'HashGroup',
         members
       });
@@ -555,7 +560,7 @@ export class ContactsHandler {
         $type$: 'Group',
         $versionHash$: (group as any).$versionHash$,
         name: group.name,
-        hashGroup: newHashGroup.idHash
+        hashGroup: newHashGroup.hash
       });
 
       return { success: true };
@@ -579,15 +584,15 @@ export class ContactsHandler {
       const group: Group = groupResult.obj;
 
       // Resolve HashGroup to get current members
-      const hashGroupResult = await getObjectByIdHash(group.hashGroup);
-      let members = [...(hashGroupResult.obj as any).members];
+      const hashGroupResult = await getObject(group.hashGroup);
+      let members = [...hashGroupResult.members];
 
       // Remove members
       const contactSet = new Set(contactIds);
       members = members.filter(personId => !contactSet.has(personId));
 
       // Create new HashGroup with updated members
-      const newHashGroup = await storeVersionedObject({
+      const newHashGroup = await storeUnversionedObject({
         $type$: 'HashGroup',
         members
       });
@@ -597,7 +602,7 @@ export class ContactsHandler {
         $type$: 'Group',
         $versionHash$: (group as any).$versionHash$,
         name: group.name,
-        hashGroup: newHashGroup.idHash
+        hashGroup: newHashGroup.hash
       });
 
       return { success: true };
@@ -625,8 +630,8 @@ export class ContactsHandler {
       const group: Group = result.obj;
 
       // Resolve HashGroup to get members
-      const hashGroupResult = await getObjectByIdHash(group.hashGroup);
-      const memberIds = (hashGroupResult.obj as any).members;
+      const hashGroupResult = await getObject(group.hashGroup);
+      const memberIds = hashGroupResult.members;
 
       // Get member details
       const members = [];
@@ -668,7 +673,7 @@ export class ContactsHandler {
       const group: Group = result.obj;
 
       // Create empty HashGroup (soft delete)
-      const emptyHashGroup = await storeVersionedObject({
+      const emptyHashGroup = await storeUnversionedObject({
         $type$: 'HashGroup',
         members: []
       });
@@ -678,7 +683,7 @@ export class ContactsHandler {
         $type$: 'Group',
         $versionHash$: (group as any).$versionHash$,
         name: group.name,
-        hashGroup: emptyHashGroup.idHash
+        hashGroup: emptyHashGroup.hash
       });
 
       return { success: true };

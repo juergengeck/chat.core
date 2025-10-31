@@ -15,6 +15,7 @@ import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js'
  */
 export interface TopicGroupManagerStorageDeps {
     storeVersionedObject: (obj: any) => Promise<any>;
+    storeUnversionedObject: (obj: any) => Promise<any>;
     getObjectByIdHash: (idHash: SHA256IdHash<any>) => Promise<any>;
     getObject: (hash: SHA256Hash<any>) => Promise<any>;
     getAllOfType: (type: string) => Promise<any[]>;
@@ -37,14 +38,22 @@ export declare class TopicGroupManager {
     private oneCore;
     private conversationGroups;
     private storageDeps;
+    private allowedGroups;
     constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps);
     /**
-     * Create an objectFilter for CHUM sync that validates Group signatures
-     * This filter ensures Groups are cryptographically signed by trusted members
+     * Create an outbound objectFilter for CHUM sync (what we SEND to peers)
+     * Simple allowlist: only share Groups we created
      *
      * @returns ObjectFilter function for use in ConnectionsModel config
      */
     createObjectFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean>;
+    /**
+     * Create an inbound importFilter for CHUM sync (what we ACCEPT from peers)
+     * Validates Groups have cryptographic certificates from trusted people
+     *
+     * @returns ImportFilter function for use in ConnectionsModel config
+     */
+    createImportFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean>;
     /**
      * Check if a conversation has a group
      */

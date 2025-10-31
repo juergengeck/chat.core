@@ -19,6 +19,7 @@ import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js'
  */
 export interface TopicGroupManagerStorageDeps {
   storeVersionedObject: (obj: any) => Promise<any>;
+  storeUnversionedObject: (obj: any) => Promise<any>;
   getObjectByIdHash: (idHash: SHA256IdHash<any>) => Promise<any>;
   getObject: (hash: SHA256Hash<any>) => Promise<any>;
   getAllOfType: (type: string) => Promise<any[]>;
@@ -43,24 +44,45 @@ export class TopicGroupManager {
   private oneCore: OneCoreInstance;
   private conversationGroups: Map<string, SHA256IdHash<any>>;
   private storageDeps: TopicGroupManagerStorageDeps;
+  private allowedGroups: Set<SHA256IdHash<any>>; // Groups we created and allow sharing
 
   constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps) {
     this.oneCore = oneCore;
     this.storageDeps = storageDeps;
     this.conversationGroups = new Map(); // topicId -> groupIdHash
+    this.allowedGroups = new Set(); // Groups we allow to share via CHUM
   }
 
   /**
-   * Create an objectFilter for CHUM sync that validates Group signatures
-   * This filter ensures Groups are cryptographically signed by trusted members
+   * Create an outbound objectFilter for CHUM sync (what we SEND to peers)
+   * Simple allowlist: only share Groups we created
    *
    * @returns ObjectFilter function for use in ConnectionsModel config
    */
   createObjectFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean> {
     return async (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string): Promise<boolean> => {
       if (type === 'Group') {
+        const allowed = this.allowedGroups.has(hash as SHA256IdHash<any>);
+        console.log(`[TopicGroupManager] objectFilter: ${allowed ? '✅ Allow' : '❌ Block'} Group ${String(hash).substring(0, 8)} (outbound)`);
+        return allowed;
+      }
+
+      // Allow all other object types (Access/IdAccess handled by ONE.core defaults)
+      return true;
+    };
+  }
+
+  /**
+   * Create an inbound importFilter for CHUM sync (what we ACCEPT from peers)
+   * Validates Groups have cryptographic certificates from trusted people
+   *
+   * @returns ImportFilter function for use in ConnectionsModel config
+   */
+  createImportFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean> {
+    return async (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string): Promise<boolean> => {
+      if (type === 'Group') {
         try {
-          console.log(`[TopicGroupManager] objectFilter: Validating Group certificate for ${String(hash).substring(0, 8)}`);
+          console.log(`[TopicGroupManager] importFilter: Validating Group certificate for ${String(hash).substring(0, 8)}`);
 
           // Get list of people we trust (ourselves + people we've paired with)
           const knownPeople = await this.oneCore.leuteModel.others();
@@ -100,7 +122,13 @@ export class TopicGroupManager {
         }
       }
 
-      // Allow all other object types (Access objects are handled by ONE.core)
+      // Block Access/IdAccess by default (security - these control permissions)
+      if (type === 'Access' || type === 'IdAccess') {
+        console.log(`[TopicGroupManager] importFilter: ❌ Block ${type} (security policy)`);
+        return false;
+      }
+
+      // Allow all other object types
       return true;
     };
   }
@@ -151,24 +179,26 @@ export class TopicGroupManager {
         $type$: 'HashGroup' as const,
         members: participants
       };
-      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(hashGroup as any);
+      const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(hashGroup as any);
 
       // 2. Create Group referencing the HashGroup
       const group = {
         $type$: 'Group' as const,
         name: groupName,
-        hashGroup: storedHashGroup.idHash
+        hashGroup: storedHashGroup.hash
       };
 
       // Store the group
       const storedGroup: any = await this.storageDeps.storeVersionedObject(group as any);
       const groupIdHash = storedGroup.idHash;
-      
+
       console.log(`[TopicGroupManager] Created group ${groupName} with ${participants.length} persons`);
       console.log(`[TopicGroupManager] Persons:`, participants.map((p: any) => String(p).substring(0, 8)).join(', '));
 
-      // Cache the group
+      // Cache the group and add to allowed list
       this.conversationGroups.set(topicId, groupIdHash);
+      this.allowedGroups.add(groupIdHash);
+      console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} to allowed groups`);
 
       // IMPORTANT: Do NOT grant any access to the Group object itself
       // This would cause CHUM to try to sync the Group object, which is rejected
@@ -305,8 +335,8 @@ export class TopicGroupManager {
       }
 
       // 2. Load existing HashGroup to get current members
-      const hashGroupResult: any = await this.storageDeps.getObjectByIdHash(existingGroup.hashGroup);
-      const currentMembers: any = hashGroupResult.obj.members || [];
+      const hashGroupResult: any = await this.storageDeps.getObject(existingGroup.hashGroup);
+      const currentMembers: any = hashGroupResult.members || [];
 
       // Check if the person is already in the group
       if (currentMembers.includes(personId)) {
@@ -319,14 +349,14 @@ export class TopicGroupManager {
         $type$: 'HashGroup' as const,
         members: [...currentMembers, personId]
       };
-      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(newHashGroup as any);
+      const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(newHashGroup as any);
 
       // 4. Create new Group version pointing to new HashGroup
       const updatedGroup = {
         $type$: 'Group' as const,
         $versionHash$: existingGroup.$versionHash$,  // Link to previous version
         name: existingGroup.name,
-        hashGroup: storedHashGroup.idHash
+        hashGroup: storedHashGroup.hash
       };
 
       // Store the updated group (this creates a new version)
@@ -462,13 +492,13 @@ export class TopicGroupManager {
       $type$: 'HashGroup' as const,
       members: participantIds  // All participants including node owner, AIs, other contacts
     };
-    const storedHashGroup: any = await this.storageDeps.storeVersionedObject(hashGroup as any);
+    const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(hashGroup as any);
 
     // 2. Create Group referencing the HashGroup
     const group = {
       $type$: 'Group' as const,
       name: groupName,
-      hashGroup: storedHashGroup.idHash
+      hashGroup: storedHashGroup.hash
     };
 
     // Store the group
@@ -478,8 +508,10 @@ export class TopicGroupManager {
     console.log(`[TopicGroupManager] Created group ${groupName} with ${participantIds.length} persons`);
     console.log(`[TopicGroupManager] Persons:`, participantIds.map(p => String(p).substring(0, 8)).join(', '));
 
-    // Cache the group
+    // Cache the group and add to allowed list
     this.conversationGroups.set(topicId, groupIdHash);
+    this.allowedGroups.add(groupIdHash);
+    console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} to allowed groups`);
 
     // Create an AffirmationCertificate for the Group (cryptographic attestation of validity)
     // This creates: License + Certificate + Signature (all unversioned objects)
@@ -491,36 +523,41 @@ export class TopicGroupManager {
     console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for Group ${String(groupIdHash).substring(0, 8)}`);
     console.log(`[TopicGroupManager] ✅ Signature: ${String(certResult.signature.hash).substring(0, 8)}, License: ${String(certResult.license.hash).substring(0, 8)}`);
 
-    // Grant all participants access to the Group, Certificate, Signature, and License
-    // All of these need to sync to participants so they can validate the Group
+    // Grant access to all objects - CHUM will sync based on new access rights
     await this.storageDeps.createAccess([
       {
+        id: storedHashGroup.hash,
+        person: participantIds,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
         id: groupIdHash,
-        person: participantIds,  // All participants get access to the Group
-        group: [],
-        mode: SET_ACCESS_MODE.ADD
-      },
-      {
-        object: certResult.certificate.hash,  // Grant access to the AffirmationCertificate
         person: participantIds,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       },
       {
-        object: certResult.signature.hash,  // Grant access to the Signature
+        object: certResult.certificate.hash,
         person: participantIds,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       },
       {
-        object: certResult.license.hash,  // Grant access to the License
+        object: certResult.signature.hash,
+        person: participantIds,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        object: certResult.license.hash,
         person: participantIds,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       }
     ]);
 
-    console.log(`[TopicGroupManager] ✅ Group, Certificate, Signature, and License access granted to ${participantIds.length} participants`);
+    console.log(`[TopicGroupManager] ✅ Access granted to ${participantIds.length} participants`);
 
     // Create the topic using TopicModel
     if (!this.oneCore.topicModel) {
@@ -548,52 +585,48 @@ export class TopicGroupManager {
     await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
     console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} access to topic ${topicId}`);
 
-    // Create channel ONLY for the local owner
-    // Other participants will create their own channels when they receive the Group via CHUM
-    if (this.oneCore.channelManager) {
-      try {
-        // Check if channel already exists before creating
-        const hasChannel = await this.oneCore.channelManager.hasChannel(topicId, this.oneCore.ownerId);
+    // Create channels for ALL participants in participantIds
+    // participantIds contains all LOCAL participants (owner + AI contacts, etc.)
+    // Remote participants will create their own channels when they receive the Group via CHUM
+    for (const participantId of participantIds) {
+      if (participantId && this.oneCore.channelManager) {
+        try {
+          // createChannel is idempotent - if channel exists, it's a no-op
+          await this.oneCore.channelManager.createChannel(topicId, participantId);
+          console.log(`[TopicGroupManager] Created channel for participant ${String(participantId).substring(0, 8)}`);
 
-        if (!hasChannel) {
-          // Create a channel owned by the local owner
-          await this.oneCore.channelManager.createChannel(topicId, this.oneCore.ownerId);
-          console.log(`[TopicGroupManager] Created channel for owner ${String(this.oneCore.ownerId).substring(0, 8)}`);
-        } else {
-          console.log(`[TopicGroupManager] Channel already exists for owner`);
+          // Grant the group access to this participant's channel
+          const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
+            $type$: 'ChannelInfo',
+            id: topicId,
+            owner: participantId
+          });
+
+          await this.storageDeps.createAccess([{
+            id: channelHash,
+            person: [],
+            group: [groupIdHash],
+            mode: SET_ACCESS_MODE.ADD
+          }]);
+
+          console.log(`[TopicGroupManager] Granted group access to channel owned by ${String(participantId).substring(0, 8)}`);
+        } catch (error) {
+          console.warn(`[TopicGroupManager] Channel creation for ${String(participantId).substring(0, 8)} failed:`, (error as Error).message);
         }
-
-        // Grant the group access to the owner's channel
-        const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
-          $type$: 'ChannelInfo',
-          id: topicId,
-          owner: this.oneCore.ownerId
-        });
-
-        await this.storageDeps.createAccess([{
-          id: channelHash,
-          person: [],
-          group: [groupIdHash],
-          mode: SET_ACCESS_MODE.ADD
-        }]);
-
-        console.log(`[TopicGroupManager] Granted group access to owner's channel`);
-      } catch (error) {
-        console.error(`[TopicGroupManager] Channel creation for owner failed:`, (error as Error).message);
-        throw error;
       }
     }
 
     console.log(`[TopicGroupManager] Topic ${topicId} created with group ${String(groupIdHash).substring(0, 8)}`);
-    console.log(`[TopicGroupManager] Created channel for owner - other participants will create their own channels`);
+    console.log(`[TopicGroupManager] Created channels for all ${participantIds.length} LOCAL participants`);
 
     // IMPORTANT: Architecture:
     // - ONE topic ID for the conversation
     // - MULTIPLE channels (one per participant) with the SAME topic ID
     // - Each participant writes to their OWN channel ONLY
     // - All participants can READ from all channels (via group access)
-    // - Each instance creates its OWN channel when it receives the Group via CHUM
-    console.log(`[TopicGroupManager] Owner has channel, participants will create theirs when they receive the Group`);
+    // - participantIds contains LOCAL participants (owner + AI contacts)
+    // - Remote humans create their OWN channels when receiving Group via CHUM
+    console.log(`[TopicGroupManager] All local participants have channels`);
 
     return topic;
   }
@@ -644,13 +677,13 @@ export class TopicGroupManager {
         $type$: 'HashGroup' as const,
         members: allParticipants
       };
-      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(hashGroup as any);
+      const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(hashGroup as any);
 
       // 2. Create Group referencing the HashGroup
       const group = {
         $type$: 'Group' as const,
         name: groupName,
-        hashGroup: storedHashGroup.idHash
+        hashGroup: storedHashGroup.hash
       };
 
       const storedGroup: any = await this.storageDeps.storeVersionedObject(group as any);
@@ -659,9 +692,11 @@ export class TopicGroupManager {
       console.log(`[TopicGroupManager] ✅ Stored NEW group with ID hash: ${String(groupIdHash).substring(0, 8)}`);
       console.log(`[TopicGroupManager] Group participants:`, allParticipants.map((p: any) => String(p).substring(0, 8)));
 
-      // Cache the group
+      // Cache the group and add to allowed list
       this.conversationGroups.set(topicId, groupIdHash!);
+      this.allowedGroups.add(groupIdHash!);
       console.log(`[TopicGroupManager] ✅ Cached group hash ${String(groupIdHash!).substring(0, 8)} for topic ${topicId}`);
+      console.log(`[TopicGroupManager] ✅ Added group to allowed groups`);
 
       console.log(`[TopicGroupManager] Created group for legacy topic ${topicId} with ${allParticipants.length} participants`);
     } else {
@@ -679,8 +714,8 @@ export class TopicGroupManager {
       }
 
       // 2. Load existing HashGroup to get current members
-      const hashGroupResult: any = await this.storageDeps.getObjectByIdHash(existingGroup.hashGroup);
-      const currentMembers: any = hashGroupResult.obj.members || [];
+      const hashGroupResult: any = await this.storageDeps.getObject(existingGroup.hashGroup);
+      const currentMembers: any = hashGroupResult.members || [];
 
       console.log(`[TopicGroupManager] Retrieved existing group with ${currentMembers.length} participants`);
       console.log(`[TopicGroupManager] Existing participants:`, currentMembers.map((p: any) => String(p).substring(0, 8)));
@@ -701,14 +736,14 @@ export class TopicGroupManager {
         $type$: 'HashGroup' as const,
         members: [...currentMembers, ...newMembers]
       };
-      const storedHashGroup: any = await this.storageDeps.storeVersionedObject(newHashGroup as any);
+      const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(newHashGroup as any);
 
       // 4. Create new Group version pointing to new HashGroup
       const updatedGroup = {
         $type$: 'Group' as const,
         $versionHash$: existingGroup.$versionHash$,  // Link to previous version
         name: existingGroup.name,
-        hashGroup: storedHashGroup.idHash
+        hashGroup: storedHashGroup.hash
       };
 
       console.log(`[TopicGroupManager] Storing UPDATED group with ${[...currentMembers, ...newMembers].length} participants`);
@@ -720,9 +755,11 @@ export class TopicGroupManager {
       console.log(`[TopicGroupManager] NEW group hash: ${String(newGroupIdHash).substring(0, 8)}`);
       console.log(`[TopicGroupManager] Updated group participants:`, [...currentMembers, ...newMembers].map((p: any) => String(p).substring(0, 8)));
 
-      // Update cache with new version
+      // Update cache with new version and add to allowed list
       this.conversationGroups.set(topicId, newGroupIdHash);
+      this.allowedGroups.add(newGroupIdHash);
       console.log(`[TopicGroupManager] ✅ Updated cache: topic ${topicId} -> ${String(newGroupIdHash).substring(0, 8)}`);
+      console.log(`[TopicGroupManager] ✅ Added updated group to allowed groups`);
 
       console.log(`[TopicGroupManager] Updated group for topic ${topicId}: added ${newMembers.length} new participants (total: ${[...currentMembers, ...newMembers].length})`);
 
@@ -930,9 +967,16 @@ export class TopicGroupManager {
 
       const topicId = topicIdMatch[1];
 
+      // Skip if we already have this group cached (we created it ourselves)
+      const existingGroup = this.conversationGroups.get(topicId);
+      if (existingGroup && String(existingGroup) === String(groupIdHash)) {
+        console.log(`[TopicGroupManager] Skipping self-created group for topic ${topicId}`);
+        return;
+      }
+
       // Load the HashGroup to get members
-      const hashGroupResult: any = await this.storageDeps.getObjectByIdHash(group.hashGroup);
-      const members: any = hashGroupResult.obj.members || [];
+      const hashGroupResult: any = await this.storageDeps.getObject(group.hashGroup);
+      const members: any = hashGroupResult.members || [];
 
       // Check if we're a member of this group
       const isMember = members.some((m: any) => String(m) === String(this.oneCore.ownerId));

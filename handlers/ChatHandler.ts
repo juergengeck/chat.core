@@ -10,6 +10,7 @@ import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js'
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
 
 // Request/Response types
 export interface InitializeDefaultChatsRequest {
@@ -392,6 +393,16 @@ export class ChatHandler {
 
       // Retrieve all messages
       const allMessages = await topicRoom.retrieveAllMessages();
+      console.log(`[ChatHandler] 📨 Retrieved ${allMessages.length} messages for topic: ${request.conversationId}`);
+
+      // Debug: Log channel info
+      try {
+        const channels = this.nodeOneCore.channelManager.getMatchingChannelInfos({channelId: request.conversationId});
+        console.log(`[ChatHandler] 📡 Found ${channels.length} channels for topic ${request.conversationId}:`,
+          channels.map((ch: any) => ({id: ch.id, owner: ch.owner})));
+      } catch (e) {
+        console.log('[ChatHandler] ⚠️ Could not query channels:', e);
+      }
 
       // Map ObjectData to UI format - extract the actual message data and look up sender names
       const formattedMessages = await Promise.all(allMessages.map(async (msg: any) => {
@@ -594,6 +605,7 @@ export class ChatHandler {
 
       // Get all topics
       const topics = await this.nodeOneCore.topicModel.topics.all();
+      console.log(`[ChatHandler] Retrieved ${topics.length} topics:`, topics.map((t: any) => t.id));
 
       // Convert to conversation format
       const conversations = await Promise.all(
@@ -609,6 +621,101 @@ export class ChatHandler {
             if (isAITopic) {
               aiModelId = this.nodeOneCore.aiAssistantModel.getModelIdForTopic(topicId);
             }
+          }
+
+          // Get participants from topic group with enriched data (names, AI info)
+          let participants: any[] = [];
+          try {
+            if (topic.group) {
+              // Import getIdObject dynamically to avoid module issues
+              const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+              const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+              const group = await getIdObject(topic.group) as Group;
+
+              // CRITICAL: NEW one.core structure has hashGroup → HashGroup.members
+              if (group.hashGroup) {
+                const hashGroup = await getObject(group.hashGroup) as HashGroup;
+                if (hashGroup.members) {
+                  const participantIds = Array.from(hashGroup.members).map(id => String(id));
+
+                  // Enrich each participant with name and AI info
+                  participants = await Promise.all(participantIds.map(async (participantId) => {
+                    let name = 'Unknown';
+                    let isAI = false;
+
+                    // Check if AI participant
+                    if (this.nodeOneCore.aiAssistantModel) {
+                      isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
+
+                      if (isAI) {
+                        // Get AI name from LLM object
+                        const llmObjects = this.nodeOneCore.llmObjectManager?.getAllLLMObjects() || [];
+                        const llmObject = llmObjects.find((obj: any) => {
+                          try {
+                            return this.nodeOneCore.aiAssistantModel?.matchesLLM(participantId, obj);
+                          } catch {
+                            return false;
+                          }
+                        });
+
+                        if (llmObject) {
+                          name = llmObject.name || llmObject.modelName || llmObject.modelId || 'AI Assistant';
+                        } else {
+                          // Fallback: try to get model ID from aiAssistantModel
+                          const modelId = this.nodeOneCore.aiAssistantModel?.getModelIdForPersonId?.(participantId);
+                          name = modelId || 'AI Assistant';
+                        }
+                      }
+                    }
+
+                    // Get name from Leute model for non-AI participants
+                    if (!isAI && this.nodeOneCore.leuteModel) {
+                      try {
+                        // Check if it's current user
+                        if (participantId === this.nodeOneCore.ownerId) {
+                          const me: any = await this.nodeOneCore.leuteModel.me();
+                          if (me) {
+                            const profile: any = await me.mainProfile();
+                            if (profile) {
+                              const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                              name = personName?.name || profile.name || 'You';
+                            }
+                          }
+                        } else {
+                          // Check other contacts
+                          const others: any = await this.nodeOneCore.leuteModel.others();
+                          for (const someone of others) {
+                            try {
+                              const personId: any = await someone.mainIdentity();
+                              if (personId && personId.toString() === participantId) {
+                                const profile: any = await someone.mainProfile();
+                                if (profile) {
+                                  const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                                  name = personName?.name || profile.name || 'User';
+                                  break;
+                                }
+                              }
+                            } catch (e) {
+                              // Continue to next person
+                            }
+                          }
+                        }
+                      } catch (error) {
+                        console.warn(`[ChatHandler] Could not get name for participant ${participantId}:`, error);
+                      }
+                    }
+
+                    return {
+                      id: participantId,
+                      name,
+                      isAI
+                    };
+                  }));
+                }
+              }
+            }
+          } catch (error) {
+            console.warn(`[ChatHandler] Could not fetch participants for topic ${topicId}:`, error);
           }
 
           // Fetch last message for preview
@@ -648,16 +755,29 @@ export class ChatHandler {
             console.warn(`[ChatHandler] Could not fetch last message for topic ${topicId}:`, error);
           }
 
+          // Check if any participant is AI
+          const hasAIParticipant = participants.some((p: any) => p.isAI);
+
+          // Get model name from AI participant if available, otherwise use model ID
+          let modelName: string | null = aiModelId || null;
+          if (hasAIParticipant) {
+            const aiParticipant = participants.find((p: any) => p.isAI);
+            if (aiParticipant?.name) {
+              modelName = aiParticipant.name;
+            }
+          }
+
           return {
             id: topicId,
             name: name || topicId,
             type: 'chat',
-            participants: [],
+            participants,
             lastActivity: lastMessageTime,
             lastMessage,
             unreadCount: 0,
             isAITopic,
-            aiModelId
+            hasAIParticipant,
+            modelName
           };
         })
       );
@@ -667,6 +787,8 @@ export class ChatHandler {
 
       // Apply pagination
       const paginatedConversations = sortedConversations.slice(offset, offset + limit);
+
+      console.log(`[ChatHandler] Returning ${paginatedConversations.length} conversations:`, paginatedConversations.map(c => ({ id: c.id, name: c.name })));
 
       return {
         success: true,
