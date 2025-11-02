@@ -36,13 +36,13 @@ export class ChatHandler {
      * Initialize default chats
      */
     async initializeDefaultChats(request) {
-        console.log('[ChatHandler] Initializing default chats');
+        console.error('[ChatHandler] Initializing default chats');
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 return { success: false, error: 'Node not ready' };
             }
             // Don't create any chats here - they should only be created when we have an AI model
-            console.log('[ChatHandler] Skipping chat creation - will create when model is selected');
+            console.error('[ChatHandler] Skipping chat creation - will create when model is selected');
             return { success: true };
         }
         catch (error) {
@@ -54,12 +54,12 @@ export class ChatHandler {
      * UI ready signal
      */
     async uiReady(request) {
-        console.log('[ChatHandler] UI signaled ready for messages');
+        console.error('[ChatHandler] UI signaled ready for messages');
         try {
             // Notify the PeerMessageListener that UI is ready (platform-specific)
             if (this.nodeOneCore.peerMessageListener) {
                 // This will be handled by the platform-specific adapter
-                console.log('[ChatHandler] PeerMessageListener available');
+                console.error('[ChatHandler] PeerMessageListener available');
             }
             return { success: true };
         }
@@ -72,12 +72,14 @@ export class ChatHandler {
      * Send a message to a conversation
      */
     async sendMessage(request) {
-        console.log('[ChatHandler] Send message:', { conversationId: request.conversationId, content: request.content });
+        // Disabled: Pollutes JSON-RPC stdout in MCP server
+        // console.error('[ChatHandler] Send message:', { conversationId: request.conversationId, content: request.content, senderId: request.senderId });
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
             }
-            const userId = this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
+            // Use provided senderId or default to owner
+            const userId = request.senderId || this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
             if (!userId) {
                 throw new Error('User not authenticated');
             }
@@ -85,7 +87,10 @@ export class ChatHandler {
             if (!request.conversationId || typeof request.conversationId !== 'string') {
                 throw new Error(`Invalid conversationId: ${request.conversationId}`);
             }
-            if (!request.content || request.content.trim().length === 0) {
+            // Allow empty content if attachments are present
+            const hasContent = request.content && request.content.trim().length > 0;
+            const hasAttachments = request.attachments && request.attachments.length > 0;
+            if (!hasContent && !hasAttachments) {
                 throw new Error('Message content cannot be empty');
             }
             // Get topic room
@@ -99,7 +104,8 @@ export class ChatHandler {
             }
             // Determine if P2P or group
             const isP2P = request.conversationId.includes('<->');
-            const channelOwner = isP2P ? null : this.nodeOneCore.ownerId;
+            // For group chats, use the sender as channel owner (each participant owns their channel)
+            const channelOwner = isP2P ? null : userId;
             // Send message with or without attachments
             if (request.attachments && request.attachments.length > 0) {
                 const attachmentHashes = request.attachments.map(att => {
@@ -116,15 +122,15 @@ export class ChatHandler {
             // This must happen AFTER the user's message is sent
             if (this.nodeOneCore.aiAssistantModel) {
                 const isAITopic = this.nodeOneCore.aiAssistantModel.isAITopic(request.conversationId);
-                console.log('[ChatHandler] AI topic check:', { conversationId: request.conversationId, isAITopic });
+                console.error('[ChatHandler] AI topic check:', { conversationId: request.conversationId, isAITopic });
                 if (isAITopic) {
-                    console.log('[ChatHandler] 🤖 Triggering AI response for topic:', request.conversationId);
+                    console.error('[ChatHandler] 🤖 Triggering AI response for topic:', request.conversationId);
                     // Trigger AI response in background (don't await - let it stream independently)
                     // Using setTimeout(0) for browser compatibility (equivalent to setImmediate in Node.js)
                     setTimeout(async () => {
                         try {
                             await this.nodeOneCore.aiAssistantModel.processMessage(request.conversationId, request.content, userId);
-                            console.log('[ChatHandler] ✅ AI response triggered successfully');
+                            console.error('[ChatHandler] ✅ AI response triggered successfully');
                         }
                         catch (aiError) {
                             console.error('[ChatHandler] ❌ AI response failed:', aiError);
@@ -157,8 +163,8 @@ export class ChatHandler {
      * Get messages for a conversation
      */
     async getMessages(request) {
-        console.log('[ChatHandler] Get messages:', request.conversationId);
         try {
+            console.error(`[ChatHandler] 🔍 getMessages called for: ${request.conversationId}`);
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
             }
@@ -167,12 +173,14 @@ export class ChatHandler {
             // Get topic room - may not exist yet if topic is being created
             let topicRoom;
             try {
+                console.error(`[ChatHandler] 🔍 Entering topic room: ${request.conversationId}`);
                 topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
+                console.error(`[ChatHandler] ✅ Topic room entered successfully`);
             }
             catch (error) {
                 // Topic doesn't exist yet - return empty messages (valid during topic creation)
                 if (error.message?.includes('does not exist')) {
-                    console.log(`[ChatHandler] Topic ${request.conversationId} doesn't exist yet, returning empty messages`);
+                    console.error(`[ChatHandler] ⚠️ Topic ${request.conversationId} doesn't exist yet, returning empty messages`);
                     return {
                         success: true,
                         messages: [],
@@ -180,24 +188,28 @@ export class ChatHandler {
                         total: 0
                     };
                 }
+                console.error(`[ChatHandler] ❌ Failed to enter topic room:`, error);
                 throw error; // Re-throw other errors
             }
             if (!topicRoom) {
+                console.error(`[ChatHandler] ❌ Topic room is null/undefined for: ${request.conversationId}`);
                 throw new Error(`Topic not found: ${request.conversationId}`);
             }
             // Retrieve all messages
+            console.error(`[ChatHandler] 🔍 Retrieving all messages...`);
             const allMessages = await topicRoom.retrieveAllMessages();
-            console.log(`[ChatHandler] 📨 Retrieved ${allMessages.length} messages for topic: ${request.conversationId}`);
-            // Debug: Log channel info
-            try {
-                const channels = this.nodeOneCore.channelManager.getMatchingChannelInfos({ channelId: request.conversationId });
-                console.log(`[ChatHandler] 📡 Found ${channels.length} channels for topic ${request.conversationId}:`, channels.map((ch) => ({ id: ch.id, owner: ch.owner })));
-            }
-            catch (e) {
-                console.log('[ChatHandler] ⚠️ Could not query channels:', e);
-            }
+            console.error(`[ChatHandler] 📨 Retrieved ${allMessages.length} raw messages`);
             // Map ObjectData to UI format - extract the actual message data and look up sender names
-            const formattedMessages = await Promise.all(allMessages.map(async (msg) => {
+            const formattedMessages = await Promise.all(allMessages.map(async (msg, index) => {
+                console.error(`[ChatHandler] 🔍 Processing message ${index + 1}/${allMessages.length}:`, {
+                    id: msg.id,
+                    hasData: !!msg.data,
+                    dataKeys: msg.data ? Object.keys(msg.data) : [],
+                    hasText: !!(msg.data?.text || msg.text),
+                    text: (msg.data?.text || msg.text || '').substring(0, 50),
+                    author: String(msg.author || '').substring(0, 16),
+                    creationTime: msg.creationTime
+                });
                 let senderName = 'Unknown';
                 // Get sender from either author or data.sender (matches Electron pattern)
                 const sender = msg.author || msg.data?.sender;
@@ -209,29 +221,15 @@ export class ChatHandler {
                         if (this.nodeOneCore.aiAssistantModel) {
                             isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
                             if (isAI) {
-                                // Get the LLM object to find the name
-                                const llmObjects = this.nodeOneCore.llmObjectManager?.getAllLLMObjects() || [];
-                                const llmObject = llmObjects.find((obj) => {
-                                    try {
-                                        return this.nodeOneCore.aiAssistantModel?.matchesLLM(sender, obj);
-                                    }
-                                    catch {
-                                        return false;
-                                    }
-                                });
-                                if (llmObject) {
-                                    senderName = llmObject.name || llmObject.modelName || llmObject.modelId;
-                                    if (!senderName) {
-                                        console.error(`[ChatHandler] LLM object exists but has no name fields: ${JSON.stringify(llmObject)}`);
-                                        senderName = 'AI Assistant';
-                                    }
+                                // Get modelId for this AI person
+                                const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(sender);
+                                if (modelId) {
+                                    // Get LLM object for this model to get the display name
+                                    const llmObject = await this.nodeOneCore.llmObjectManager?.getByModelId?.(modelId);
+                                    senderName = llmObject?.name || modelId;
                                 }
                                 else {
-                                    // LLM object not found - log error but don't crash
-                                    console.error(`[ChatHandler] AI sender detected but no LLM object found for: ${sender}`);
-                                    // Try to get modelId from aiAssistantModel
-                                    const modelId = this.nodeOneCore.aiAssistantModel?.getModelIdForPersonId?.(sender);
-                                    senderName = modelId || 'AI Assistant';
+                                    senderName = 'AI Assistant';
                                 }
                             }
                         }
@@ -293,6 +291,7 @@ export class ChatHandler {
             const sortedMessages = formattedMessages.sort((a, b) => {
                 return a.timestamp - b.timestamp;
             });
+            console.error(`[ChatHandler] 📨 Formatted ${sortedMessages.length} messages`);
             // Apply pagination from the END (most recent messages first)
             // Chat apps show newest messages when you open a conversation
             const totalMessages = sortedMessages.length;
@@ -300,6 +299,7 @@ export class ChatHandler {
             const startIndex = Math.max(0, endIndex - limit);
             const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
             const hasMore = startIndex > 0;
+            console.error(`[ChatHandler] ✅ Returning ${paginatedMessages.length} messages (paginated from ${totalMessages} total)`);
             return {
                 success: true,
                 messages: paginatedMessages,
@@ -319,7 +319,7 @@ export class ChatHandler {
      * Create a new conversation
      */
     async createConversation(request) {
-        console.log('[ChatHandler] Create conversation:', request);
+        console.error('[ChatHandler] Create conversation:', request);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -335,16 +335,41 @@ export class ChatHandler {
             const participants = request.participants || [];
             const name = request.name || `Conversation ${Date.now()}`;
             // Generate deterministic topic ID for the conversation
-            const topicId = `group-${Date.now()}-${String(userId).substring(0, 8)}`;
+            // Use Date.now() + random component to prevent burst collisions
+            const randomComponent = Math.random().toString(36).substring(2, 8);
+            const topicId = `group-${Date.now()}-${randomComponent}-${String(userId).substring(0, 8)}`;
             // Create topic using TopicGroupManager (creates group, grants access, creates owner's channel)
             const topic = await this.nodeOneCore.topicGroupManager.createGroupTopic(name, topicId, participants);
-            console.log('[ChatHandler] Created topic with group access:', topicId);
+            console.error('[ChatHandler] Created topic with group access:', topicId);
             // Configure channel for group conversations (one.leute pattern)
             // This ensures Person/Profile objects arriving via CHUM are automatically registered
             if (this.nodeOneCore.channelManager) {
                 this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topicId, true);
                 this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topicId, true);
-                console.log('[ChatHandler] ✅ Channel settings configured for automatic Person/Profile registration');
+                console.error('[ChatHandler] ✅ Channel settings configured for automatic Person/Profile registration');
+            }
+            // If aiModelId is provided, register the topic with AIAssistantModel and trigger welcome
+            if (request.aiModelId && this.nodeOneCore.aiAssistantModel) {
+                console.error(`[ChatHandler] Registering AI topic ${topicId} with model ${request.aiModelId}`);
+                try {
+                    // Register the topic
+                    this.nodeOneCore.aiAssistantModel.aiTopicManager.registerAITopic(topicId, request.aiModelId);
+                    console.error(`[ChatHandler] ✅ AI topic registered successfully`);
+                    // Trigger welcome message generation in background
+                    setTimeout(async () => {
+                        try {
+                            console.error(`[ChatHandler] 🎉 Triggering welcome message for new AI topic: ${topicId}`);
+                            await this.nodeOneCore.aiAssistantModel.aiMessageProcessor.handleNewTopic(topicId, request.aiModelId);
+                        }
+                        catch (error) {
+                            console.error(`[ChatHandler] ⚠️ Failed to generate welcome message:`, error);
+                        }
+                    }, 0);
+                }
+                catch (error) {
+                    console.error(`[ChatHandler] ⚠️ Failed to register AI topic:`, error);
+                    // Non-fatal - topic creation still succeeds
+                }
             }
             return {
                 success: true,
@@ -353,7 +378,9 @@ export class ChatHandler {
                     name,
                     type,
                     participants: [String(userId), ...participants],
-                    created: Date.now()
+                    created: Date.now(),
+                    isAITopic: !!request.aiModelId,
+                    aiModelId: request.aiModelId
                 }
             };
         }
@@ -369,7 +396,8 @@ export class ChatHandler {
      * Get all conversations
      */
     async getConversations(request) {
-        console.log('[ChatHandler] Get conversations');
+        // Use console.error for MCP compatibility (stdout must be JSON-RPC only)
+        console.error('[ChatHandler] 🔍 Get conversations - START');
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
@@ -377,8 +405,13 @@ export class ChatHandler {
             const limit = request.limit || 20;
             const offset = request.offset || 0;
             // Get all topics
+            console.error('[ChatHandler] 🔍 Fetching topics from topicModel.topics.all()...');
             const topics = await this.nodeOneCore.topicModel.topics.all();
-            console.log(`[ChatHandler] Retrieved ${topics.length} topics:`, topics.map((t) => t.id));
+            console.error(`[ChatHandler] 📋 Retrieved ${topics.length} topics:`, topics.map((t) => ({
+                id: t.id,
+                name: t.name,
+                hasGroup: !!t.group
+            })));
             // Convert to conversation format
             const conversations = await Promise.all(topics.map(async (topic) => {
                 const topicId = topic.id;
@@ -395,102 +428,138 @@ export class ChatHandler {
                 // Get participants from topic group with enriched data (names, AI info)
                 let participants = [];
                 try {
-                    if (topic.group) {
-                        // Import getIdObject dynamically to avoid module issues
-                        const { getIdObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+                    // Use TopicGroupManager.getGroupForTopic - the persistent way to find groups
+                    // This queries IdAccess instead of relying on topic.group property
+                    let groupIdHash = null;
+                    console.error(`[ChatHandler] 🔍 Looking for group for topic ${topicId}`);
+                    console.error(`[ChatHandler] topicGroupManager available:`, !!this.nodeOneCore.topicGroupManager);
+                    if (this.nodeOneCore.topicGroupManager) {
+                        groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(topicId);
+                        console.error(`[ChatHandler] getGroupForTopic returned:`, groupIdHash ? String(groupIdHash).substring(0, 8) : 'null');
+                    }
+                    if (!groupIdHash) {
+                        throw new Error(`Topic ${topicId} has no group - broken state, cannot retrieve participants`);
+                    }
+                    {
+                        // Import getObjectByIdHash (NOT getIdObject - that only returns ID properties!)
+                        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
                         const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
-                        const group = await getIdObject(topic.group);
-                        // CRITICAL: NEW one.core structure has hashGroup → HashGroup.members
+                        const groupResult = await getObjectByIdHash(groupIdHash);
+                        const group = groupResult.obj;
+                        console.error(`[ChatHandler] 📦 Group object:`, JSON.stringify(group, null, 2));
+                        // Group structure: Group → hashGroup → HashGroup.members
                         if (group.hashGroup) {
                             const hashGroup = await getObject(group.hashGroup);
+                            console.error(`[ChatHandler] 📦 HashGroup:`, JSON.stringify(hashGroup, null, 2));
                             if (hashGroup.members) {
                                 const participantIds = Array.from(hashGroup.members).map(id => String(id));
-                                // Enrich each participant with name and AI info
-                                participants = await Promise.all(participantIds.map(async (participantId) => {
-                                    let name = 'Unknown';
-                                    let isAI = false;
-                                    // Check if AI participant
-                                    if (this.nodeOneCore.aiAssistantModel) {
-                                        isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
-                                        if (isAI) {
-                                            // Get AI name from LLM object
-                                            const llmObjects = this.nodeOneCore.llmObjectManager?.getAllLLMObjects() || [];
-                                            const llmObject = llmObjects.find((obj) => {
-                                                try {
-                                                    return this.nodeOneCore.aiAssistantModel?.matchesLLM(participantId, obj);
+                                console.error(`[ChatHandler] 📦 Found ${participantIds.length} participants`);
+                                if (participantIds.length > 0) {
+                                    // Enrich each participant with name and AI info
+                                    participants = await Promise.all(participantIds.map(async (participantId) => {
+                                        let name = 'Unknown';
+                                        let isAI = false;
+                                        // Check if AI participant
+                                        if (this.nodeOneCore.aiAssistantModel) {
+                                            isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
+                                            if (isAI) {
+                                                // Get AI name from LLM object
+                                                const llmObjects = this.nodeOneCore.llmObjectManager?.getAllLLMObjects() || [];
+                                                const llmObject = llmObjects.find((obj) => {
+                                                    try {
+                                                        return this.nodeOneCore.aiAssistantModel?.matchesLLM(participantId, obj);
+                                                    }
+                                                    catch {
+                                                        return false;
+                                                    }
+                                                });
+                                                if (llmObject) {
+                                                    name = llmObject.name || llmObject.modelName || llmObject.modelId || 'AI Assistant';
                                                 }
-                                                catch {
-                                                    return false;
+                                                else {
+                                                    // Fallback: try to get model ID from aiAssistantModel
+                                                    const modelId = this.nodeOneCore.aiAssistantModel?.getModelIdForPersonId?.(participantId);
+                                                    name = modelId || 'AI Assistant';
                                                 }
-                                            });
-                                            if (llmObject) {
-                                                name = llmObject.name || llmObject.modelName || llmObject.modelId || 'AI Assistant';
-                                            }
-                                            else {
-                                                // Fallback: try to get model ID from aiAssistantModel
-                                                const modelId = this.nodeOneCore.aiAssistantModel?.getModelIdForPersonId?.(participantId);
-                                                name = modelId || 'AI Assistant';
                                             }
                                         }
-                                    }
-                                    // Get name from Leute model for non-AI participants
-                                    if (!isAI && this.nodeOneCore.leuteModel) {
-                                        try {
-                                            // Check if it's current user
-                                            if (participantId === this.nodeOneCore.ownerId) {
-                                                const me = await this.nodeOneCore.leuteModel.me();
-                                                if (me) {
-                                                    const profile = await me.mainProfile();
-                                                    if (profile) {
-                                                        const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
-                                                        name = personName?.name || profile.name || 'You';
-                                                    }
-                                                }
-                                            }
-                                            else {
-                                                // Check other contacts
-                                                const others = await this.nodeOneCore.leuteModel.others();
-                                                for (const someone of others) {
-                                                    try {
-                                                        const personId = await someone.mainIdentity();
-                                                        if (personId && personId.toString() === participantId) {
-                                                            const profile = await someone.mainProfile();
-                                                            if (profile) {
-                                                                const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
-                                                                name = personName?.name || profile.name || 'User';
-                                                                break;
-                                                            }
+                                        // Get name from Leute model for non-AI participants
+                                        if (!isAI && this.nodeOneCore.leuteModel) {
+                                            try {
+                                                // Check if it's current user
+                                                if (participantId === this.nodeOneCore.ownerId) {
+                                                    const me = await this.nodeOneCore.leuteModel.me();
+                                                    if (me) {
+                                                        const profile = await me.mainProfile();
+                                                        if (profile) {
+                                                            const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
+                                                            name = personName?.name || profile.name || 'You';
                                                         }
                                                     }
-                                                    catch (e) {
-                                                        // Continue to next person
+                                                }
+                                                else {
+                                                    // Check other contacts
+                                                    const others = await this.nodeOneCore.leuteModel.others();
+                                                    for (const someone of others) {
+                                                        try {
+                                                            const personId = await someone.mainIdentity();
+                                                            if (personId && personId.toString() === participantId) {
+                                                                const profile = await someone.mainProfile();
+                                                                if (profile) {
+                                                                    const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
+                                                                    name = personName?.name || profile.name || 'User';
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
+                                                        catch (e) {
+                                                            // Continue to next person
+                                                        }
                                                     }
                                                 }
                                             }
+                                            catch (error) {
+                                                console.warn(`[ChatHandler] Could not get name for participant ${participantId}:`, error);
+                                            }
                                         }
-                                        catch (error) {
-                                            console.warn(`[ChatHandler] Could not get name for participant ${participantId}:`, error);
-                                        }
-                                    }
-                                    return {
-                                        id: participantId,
-                                        name,
-                                        isAI
-                                    };
-                                }));
+                                        return {
+                                            id: participantId,
+                                            name,
+                                            isAI
+                                        };
+                                    }));
+                                }
                             }
+                        }
+                        else {
+                            console.error(`[ChatHandler] ⚠️ Group has no hashGroup property`);
                         }
                     }
                 }
                 catch (error) {
-                    console.warn(`[ChatHandler] Could not fetch participants for topic ${topicId}:`, error);
+                    console.error(`[ChatHandler] ❌ ERROR fetching participants for topic ${topicId}:`, error);
+                    console.error(`[ChatHandler] ❌ Error stack:`, error.stack);
+                    // Fallback on error: Add current user as participant
+                    if (participants.length === 0) {
+                        const currentUserId = this.nodeOneCore.ownerId;
+                        if (currentUserId) {
+                            participants = [{
+                                    id: String(currentUserId),
+                                    name: 'You',
+                                    isAI: false
+                                }];
+                            console.error(`[ChatHandler] ✅ Using fallback participant after error: current user`);
+                        }
+                    }
                 }
                 // Fetch last message for preview
                 let lastMessage = '';
                 let lastMessageTime = Date.now();
                 try {
+                    console.error(`[ChatHandler] 🔍 Fetching last message for topic ${topicId}...`);
                     const topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(topicId);
                     const messages = await topicRoom.retrieveAllMessages();
+                    console.error(`[ChatHandler] 📨 Topic ${topicId} has ${messages.length} messages`);
                     if (messages.length > 0) {
                         // Get the most recent message
                         const sortedMessages = messages.sort((a, b) => {
@@ -548,7 +617,12 @@ export class ChatHandler {
             const sortedConversations = conversations.sort((a, b) => b.lastActivity - a.lastActivity);
             // Apply pagination
             const paginatedConversations = sortedConversations.slice(offset, offset + limit);
-            console.log(`[ChatHandler] Returning ${paginatedConversations.length} conversations:`, paginatedConversations.map(c => ({ id: c.id, name: c.name })));
+            console.error(`[ChatHandler] Returning ${paginatedConversations.length} conversations:`, paginatedConversations.map(c => ({
+                id: c.id,
+                name: c.name,
+                participantCount: c.participants?.length || 0,
+                firstParticipant: c.participants?.[0]
+            })));
             return {
                 success: true,
                 data: paginatedConversations
@@ -566,7 +640,7 @@ export class ChatHandler {
      * Get a single conversation
      */
     async getConversation(request) {
-        console.log('[ChatHandler] Get conversation:', request.conversationId);
+        console.error('[ChatHandler] Get conversation:', request.conversationId);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Node not initialized');
@@ -609,7 +683,7 @@ export class ChatHandler {
      * Get current user
      */
     async getCurrentUser(request) {
-        console.log('[ChatHandler] Get current user');
+        console.error('[ChatHandler] Get current user');
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.ownerId) {
                 // Fallback to state manager
@@ -670,7 +744,7 @@ export class ChatHandler {
      * Add participants to a conversation
      */
     async addParticipants(request) {
-        console.log('[ChatHandler] Add participants:', request);
+        console.error('[ChatHandler] Add participants:', request);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -682,7 +756,7 @@ export class ChatHandler {
             }
             // Add participants
             // TODO: Implement actual participant addition logic
-            console.log('[ChatHandler] Adding participants:', request.participantIds);
+            console.error('[ChatHandler] Adding participants:', request.participantIds);
             return {
                 success: true,
                 data: {
@@ -703,7 +777,7 @@ export class ChatHandler {
      * Clear a conversation
      */
     async clearConversation(request) {
-        console.log('[ChatHandler] Clear conversation:', request.conversationId);
+        console.error('[ChatHandler] Clear conversation:', request.conversationId);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -715,7 +789,7 @@ export class ChatHandler {
             }
             // Clear conversation
             // TODO: Implement actual clear logic
-            console.log('[ChatHandler] Clearing conversation:', request.conversationId);
+            console.error('[ChatHandler] Clearing conversation:', request.conversationId);
             return { success: true };
         }
         catch (error) {
@@ -730,7 +804,7 @@ export class ChatHandler {
      * Edit a message
      */
     async editMessage(request) {
-        console.log('[ChatHandler] Edit message:', request.messageId);
+        console.error('[ChatHandler] Edit message:', request.messageId);
         try {
             if (!this.messageVersionManager) {
                 throw new Error('Message version manager not initialized');
@@ -758,7 +832,7 @@ export class ChatHandler {
      * Delete a message
      */
     async deleteMessage(request) {
-        console.log('[ChatHandler] Delete message:', request.messageId);
+        console.error('[ChatHandler] Delete message:', request.messageId);
         try {
             if (!this.messageVersionManager) {
                 throw new Error('Message version manager not initialized');
@@ -779,7 +853,7 @@ export class ChatHandler {
      * Get message history
      */
     async getMessageHistory(request) {
-        console.log('[ChatHandler] Get message history:', request.messageId);
+        console.error('[ChatHandler] Get message history:', request.messageId);
         try {
             if (!this.messageVersionManager) {
                 throw new Error('Message version manager not initialized');
@@ -802,7 +876,7 @@ export class ChatHandler {
      * Export message credential
      */
     async exportMessageCredential(request) {
-        console.log('[ChatHandler] Export message credential:', request.messageId);
+        console.error('[ChatHandler] Export message credential:', request.messageId);
         try {
             if (!this.messageAssertionManager) {
                 throw new Error('Message assertion manager not initialized');
@@ -825,7 +899,7 @@ export class ChatHandler {
      * Verify message assertion
      */
     async verifyMessageAssertion(request) {
-        console.log('[ChatHandler] Verify message assertion');
+        console.error('[ChatHandler] Verify message assertion');
         try {
             if (!this.messageAssertionManager) {
                 throw new Error('Message assertion manager not initialized');

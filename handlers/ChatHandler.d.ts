@@ -21,6 +21,7 @@ export interface SendMessageRequest {
     conversationId: string;
     content: string;
     attachments?: any[];
+    senderId?: any;
 }
 export interface SendMessageResponse {
     success: boolean;
@@ -43,6 +44,7 @@ export interface CreateConversationRequest {
     type?: string;
     participants?: any[];
     name?: string | null;
+    aiModelId?: string;
 }
 export interface CreateConversationResponse {
     success: boolean;
