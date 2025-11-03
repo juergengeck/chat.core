@@ -149,7 +149,7 @@ export declare class TopicGroupManager {
      * Handle a received Group object
      * Called either from the event listener or explicitly when a group is received
      */
-    private handleReceivedGroup;
+    handleReceivedGroup(groupIdHash: any, group: any): Promise<void>;
     /**
      * @deprecated This method is deprecated - use initializeGroupSyncListener() instead
      * Kept for backwards compatibility

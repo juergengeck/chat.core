@@ -31,6 +31,7 @@ export interface Contact {
   displayName: string;
   email: string;
   isAI: boolean;
+  modelId?: string; // LLM model ID for AI contacts
   role: string;
   platform: string;
   status: string;
@@ -183,10 +184,15 @@ export class ContactService {
           }
         }
 
-        // Check if AI contact
+        // Check if AI contact and get model ID
         let isAI = false;
+        let modelId: string | undefined = undefined;
         if (this.aiAssistantModel?.llmObjectManager) {
           isAI = this.aiAssistantModel.llmObjectManager.isLLMPerson(personId);
+          // If it's an AI contact, try to get its model ID
+          if (isAI) {
+            modelId = this.aiAssistantModel.llmObjectManager.getModelIdForPerson(personId);
+          }
         }
         if (!isAI && email && email.endsWith('@ai.local')) {
           isAI = true;
@@ -246,6 +252,7 @@ export class ContactService {
           displayName: displayName,
           email: email || `${String(personId).substring(0, 8)}@lama.network`,
           isAI: isAI,
+          modelId: modelId, // Include model ID for AI contacts
           role: isOwner ? 'owner' : 'contact',
           platform: isAI ? 'ai' : (isOwner ? 'nodejs' : 'external'),
           status: isOwner ? 'owner' : 'offline',

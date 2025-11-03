@@ -17,6 +17,7 @@ export interface Contact {
     displayName: string;
     email: string;
     isAI: boolean;
+    modelId?: string;
     role: string;
     platform: string;
     status: string;

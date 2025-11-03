@@ -124,62 +124,53 @@ export async function handleReceivedProfile(personId, profileData, leuteModel) {
     }
     // Mark as being processed
     processedProfiles.set(personId.toString(), Date.now());
-    try {
-        // Check if Someone already exists for this Person FIRST
-        // (avoids trying to load locally-created Profiles that trigger onNewVersion)
-        const others = await leuteModel.others();
-        if (others && Array.isArray(others)) {
-            for (const contact of others) {
-                if (!contact)
-                    continue;
-                try {
-                    const contactPersonId = await contact.mainIdentity();
-                    if (contactPersonId && contactPersonId.toString() === personId.toString()) {
-                        console.log('[ContactCreation] Someone already exists for this Profile - skipping');
-                        processedProfiles.delete(personId.toString());
-                        return;
-                    }
-                }
-                catch (err) {
-                    // Skip contacts we can't read
-                }
+    // Check if Someone already exists for this Person FIRST
+    // (avoids trying to load locally-created Profiles that trigger onNewVersion)
+    const others = await leuteModel.others();
+    if (others && Array.isArray(others)) {
+        for (const contact of others) {
+            if (!contact)
+                continue;
+            const contactPersonId = await contact.mainIdentity();
+            if (contactPersonId && contactPersonId.toString() === personId.toString()) {
+                console.log('[ContactCreation] Someone already exists for this Profile - skipping');
+                processedProfiles.delete(personId.toString());
+                return;
             }
         }
-        // Someone doesn't exist - this is a Profile from CHUM sync or other source
-        // Store to ensure vheads exist (CHUM sends object data but not version nodes)
-        console.log('[ContactCreation] Creating Someone for Profile from CHUM/external source...');
-        const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-        await storeVersionedObject(profileData);
-        // Load the Profile
-        const profile = await ProfileModel.constructFromLatestVersionByIdFields(personId, personId, 'default');
-        // Create Someone object
-        const someoneId = `someone-for-${personId}`;
-        const someone = await SomeoneModel.constructWithNewSomeone(leuteModel, someoneId, profile);
-        console.log('[ContactCreation] ✅ Someone created:', someone.idHash.toString().substring(0, 8));
-        // Add to contacts list
-        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-        const leuteIdHash = await calculateIdHashOfObj({
-            $type$: 'Leute',
-            appId: 'one.leute'
-        });
-        const leuteResult = await getObjectByIdHash(leuteIdHash);
-        const updatedLeute = {
-            ...leuteResult.obj,
-            other: [...new Set([...leuteResult.obj.other, someone.idHash])]
-        };
-        await storeVersionedObject(updatedLeute);
-        // Reload the model to reflect the updated contacts list
-        if (typeof leuteModel.loadLatestVersion === 'function') {
-            await leuteModel.loadLatestVersion();
-        }
-        console.log('[ContactCreation] ✅ Someone added to contacts list');
-        // Success - remove from processed profiles
-        processedProfiles.delete(personId.toString());
     }
-    catch (error) {
-        console.error('[ContactCreation] Error handling received Profile:', error);
-        // Keep in processedProfiles map to prevent retry loop
-        throw error;
+    // Someone doesn't exist - this is a Profile from CHUM sync or other source
+    // Store to ensure vheads exist (CHUM sends object data but not version nodes)
+    console.log('[ContactCreation] Creating Someone for Profile from CHUM/external source...');
+    const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+    const storedResult = await storeVersionedObject(profileData);
+    console.log('[ContactCreation] Stored Profile via CHUM - hash:', storedResult.hash.substring(0, 8), 'idHash:', storedResult.idHash.substring(0, 8));
+    // Load the Profile
+    console.log('[ContactCreation] Loading Profile for personId:', personId.substring(0, 8), 'owner:', personId.substring(0, 8), 'profileId: default');
+    const profile = await ProfileModel.constructFromLatestVersionByIdFields(personId, personId, 'default');
+    console.log('[ContactCreation] ✅ Loaded Profile idHash:', profile.idHash.substring(0, 8));
+    // Create Someone object
+    const someoneId = `someone-for-${personId}`;
+    const someone = await SomeoneModel.constructWithNewSomeone(leuteModel, someoneId, profile);
+    console.log('[ContactCreation] ✅ Someone created:', someone.idHash.toString().substring(0, 8));
+    // Add to contacts list
+    const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+    const leuteIdHash = await calculateIdHashOfObj({
+        $type$: 'Leute',
+        appId: 'one.leute'
+    });
+    const leuteResult = await getObjectByIdHash(leuteIdHash);
+    const updatedLeute = {
+        ...leuteResult.obj,
+        other: [...new Set([...leuteResult.obj.other, someone.idHash])]
+    };
+    await storeVersionedObject(updatedLeute);
+    // Reload the model to reflect the updated contacts list
+    if (typeof leuteModel.loadLatestVersion === 'function') {
+        await leuteModel.loadLatestVersion();
     }
+    console.log('[ContactCreation] ✅ Someone added to contacts list');
+    // Success - remove from processed profiles
+    processedProfiles.delete(personId.toString());
 }
 //# sourceMappingURL=ContactCreation.js.map

@@ -36,13 +36,11 @@ export class ChatHandler {
      * Initialize default chats
      */
     async initializeDefaultChats(request) {
-        console.error('[ChatHandler] Initializing default chats');
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 return { success: false, error: 'Node not ready' };
             }
             // Don't create any chats here - they should only be created when we have an AI model
-            console.error('[ChatHandler] Skipping chat creation - will create when model is selected');
             return { success: true };
         }
         catch (error) {
@@ -54,12 +52,10 @@ export class ChatHandler {
      * UI ready signal
      */
     async uiReady(request) {
-        console.error('[ChatHandler] UI signaled ready for messages');
         try {
             // Notify the PeerMessageListener that UI is ready (platform-specific)
             if (this.nodeOneCore.peerMessageListener) {
                 // This will be handled by the platform-specific adapter
-                console.error('[ChatHandler] PeerMessageListener available');
             }
             return { success: true };
         }
@@ -122,18 +118,15 @@ export class ChatHandler {
             // This must happen AFTER the user's message is sent
             if (this.nodeOneCore.aiAssistantModel) {
                 const isAITopic = this.nodeOneCore.aiAssistantModel.isAITopic(request.conversationId);
-                console.error('[ChatHandler] AI topic check:', { conversationId: request.conversationId, isAITopic });
                 if (isAITopic) {
-                    console.error('[ChatHandler] 🤖 Triggering AI response for topic:', request.conversationId);
                     // Trigger AI response in background (don't await - let it stream independently)
                     // Using setTimeout(0) for browser compatibility (equivalent to setImmediate in Node.js)
                     setTimeout(async () => {
                         try {
                             await this.nodeOneCore.aiAssistantModel.processMessage(request.conversationId, request.content, userId);
-                            console.error('[ChatHandler] ✅ AI response triggered successfully');
                         }
                         catch (aiError) {
-                            console.error('[ChatHandler] ❌ AI response failed:', aiError);
+                            console.error('[ChatHandler] AI response failed:', aiError);
                         }
                     }, 0);
                 }
@@ -164,7 +157,6 @@ export class ChatHandler {
      */
     async getMessages(request) {
         try {
-            console.error(`[ChatHandler] 🔍 getMessages called for: ${request.conversationId}`);
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
             }
@@ -173,14 +165,11 @@ export class ChatHandler {
             // Get topic room - may not exist yet if topic is being created
             let topicRoom;
             try {
-                console.error(`[ChatHandler] 🔍 Entering topic room: ${request.conversationId}`);
                 topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
-                console.error(`[ChatHandler] ✅ Topic room entered successfully`);
             }
             catch (error) {
                 // Topic doesn't exist yet - return empty messages (valid during topic creation)
                 if (error.message?.includes('does not exist')) {
-                    console.error(`[ChatHandler] ⚠️ Topic ${request.conversationId} doesn't exist yet, returning empty messages`);
                     return {
                         success: true,
                         messages: [],
@@ -188,28 +177,14 @@ export class ChatHandler {
                         total: 0
                     };
                 }
-                console.error(`[ChatHandler] ❌ Failed to enter topic room:`, error);
                 throw error; // Re-throw other errors
             }
             if (!topicRoom) {
-                console.error(`[ChatHandler] ❌ Topic room is null/undefined for: ${request.conversationId}`);
                 throw new Error(`Topic not found: ${request.conversationId}`);
             }
-            // Retrieve all messages
-            console.error(`[ChatHandler] 🔍 Retrieving all messages...`);
             const allMessages = await topicRoom.retrieveAllMessages();
-            console.error(`[ChatHandler] 📨 Retrieved ${allMessages.length} raw messages`);
             // Map ObjectData to UI format - extract the actual message data and look up sender names
-            const formattedMessages = await Promise.all(allMessages.map(async (msg, index) => {
-                console.error(`[ChatHandler] 🔍 Processing message ${index + 1}/${allMessages.length}:`, {
-                    id: msg.id,
-                    hasData: !!msg.data,
-                    dataKeys: msg.data ? Object.keys(msg.data) : [],
-                    hasText: !!(msg.data?.text || msg.text),
-                    text: (msg.data?.text || msg.text || '').substring(0, 50),
-                    author: String(msg.author || '').substring(0, 16),
-                    creationTime: msg.creationTime
-                });
+            const formattedMessages = await Promise.all(allMessages.map(async (msg) => {
                 let senderName = 'Unknown';
                 // Get sender from either author or data.sender (matches Electron pattern)
                 const sender = msg.author || msg.data?.sender;
@@ -291,7 +266,6 @@ export class ChatHandler {
             const sortedMessages = formattedMessages.sort((a, b) => {
                 return a.timestamp - b.timestamp;
             });
-            console.error(`[ChatHandler] 📨 Formatted ${sortedMessages.length} messages`);
             // Apply pagination from the END (most recent messages first)
             // Chat apps show newest messages when you open a conversation
             const totalMessages = sortedMessages.length;
@@ -299,7 +273,6 @@ export class ChatHandler {
             const startIndex = Math.max(0, endIndex - limit);
             const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
             const hasMore = startIndex > 0;
-            console.error(`[ChatHandler] ✅ Returning ${paginatedMessages.length} messages (paginated from ${totalMessages} total)`);
             return {
                 success: true,
                 messages: paginatedMessages,
@@ -319,7 +292,6 @@ export class ChatHandler {
      * Create a new conversation
      */
     async createConversation(request) {
-        console.error('[ChatHandler] Create conversation:', request);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -340,34 +312,29 @@ export class ChatHandler {
             const topicId = `group-${Date.now()}-${randomComponent}-${String(userId).substring(0, 8)}`;
             // Create topic using TopicGroupManager (creates group, grants access, creates owner's channel)
             const topic = await this.nodeOneCore.topicGroupManager.createGroupTopic(name, topicId, participants);
-            console.error('[ChatHandler] Created topic with group access:', topicId);
             // Configure channel for group conversations (one.leute pattern)
             // This ensures Person/Profile objects arriving via CHUM are automatically registered
             if (this.nodeOneCore.channelManager) {
                 this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topicId, true);
                 this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topicId, true);
-                console.error('[ChatHandler] ✅ Channel settings configured for automatic Person/Profile registration');
             }
             // If aiModelId is provided, register the topic with AIAssistantModel and trigger welcome
             if (request.aiModelId && this.nodeOneCore.aiAssistantModel) {
-                console.error(`[ChatHandler] Registering AI topic ${topicId} with model ${request.aiModelId}`);
                 try {
                     // Register the topic
                     this.nodeOneCore.aiAssistantModel.aiTopicManager.registerAITopic(topicId, request.aiModelId);
-                    console.error(`[ChatHandler] ✅ AI topic registered successfully`);
                     // Trigger welcome message generation in background
                     setTimeout(async () => {
                         try {
-                            console.error(`[ChatHandler] 🎉 Triggering welcome message for new AI topic: ${topicId}`);
                             await this.nodeOneCore.aiAssistantModel.aiMessageProcessor.handleNewTopic(topicId, request.aiModelId);
                         }
                         catch (error) {
-                            console.error(`[ChatHandler] ⚠️ Failed to generate welcome message:`, error);
+                            console.error('[ChatHandler] Failed to generate welcome message:', error);
                         }
                     }, 0);
                 }
                 catch (error) {
-                    console.error(`[ChatHandler] ⚠️ Failed to register AI topic:`, error);
+                    console.error('[ChatHandler] Failed to register AI topic:', error);
                     // Non-fatal - topic creation still succeeds
                 }
             }
@@ -396,22 +363,13 @@ export class ChatHandler {
      * Get all conversations
      */
     async getConversations(request) {
-        // Use console.error for MCP compatibility (stdout must be JSON-RPC only)
-        console.error('[ChatHandler] 🔍 Get conversations - START');
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
             }
             const limit = request.limit || 20;
             const offset = request.offset || 0;
-            // Get all topics
-            console.error('[ChatHandler] 🔍 Fetching topics from topicModel.topics.all()...');
             const topics = await this.nodeOneCore.topicModel.topics.all();
-            console.error(`[ChatHandler] 📋 Retrieved ${topics.length} topics:`, topics.map((t) => ({
-                id: t.id,
-                name: t.name,
-                hasGroup: !!t.group
-            })));
             // Convert to conversation format
             const conversations = await Promise.all(topics.map(async (topic) => {
                 const topicId = topic.id;
@@ -428,32 +386,25 @@ export class ChatHandler {
                 // Get participants from topic group with enriched data (names, AI info)
                 let participants = [];
                 try {
-                    // Use TopicGroupManager.getGroupForTopic - the persistent way to find groups
-                    // This queries IdAccess instead of relying on topic.group property
                     let groupIdHash = null;
-                    console.error(`[ChatHandler] 🔍 Looking for group for topic ${topicId}`);
-                    console.error(`[ChatHandler] topicGroupManager available:`, !!this.nodeOneCore.topicGroupManager);
                     if (this.nodeOneCore.topicGroupManager) {
                         groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(topicId);
-                        console.error(`[ChatHandler] getGroupForTopic returned:`, groupIdHash ? String(groupIdHash).substring(0, 8) : 'null');
                     }
                     if (!groupIdHash) {
-                        throw new Error(`Topic ${topicId} has no group - broken state, cannot retrieve participants`);
+                        console.warn(`[ChatHandler] Topic ${topicId} has no group - skipping participant retrieval (old/broken topic)`);
+                        // Skip topics without groups - they're from old implementations
+                        // Set empty participants array and continue
+                        participants = [];
                     }
-                    {
-                        // Import getObjectByIdHash (NOT getIdObject - that only returns ID properties!)
+                    else {
                         const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
                         const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
                         const groupResult = await getObjectByIdHash(groupIdHash);
                         const group = groupResult.obj;
-                        console.error(`[ChatHandler] 📦 Group object:`, JSON.stringify(group, null, 2));
-                        // Group structure: Group → hashGroup → HashGroup.members
                         if (group.hashGroup) {
                             const hashGroup = await getObject(group.hashGroup);
-                            console.error(`[ChatHandler] 📦 HashGroup:`, JSON.stringify(hashGroup, null, 2));
                             if (hashGroup.members) {
                                 const participantIds = Array.from(hashGroup.members).map(id => String(id));
-                                console.error(`[ChatHandler] 📦 Found ${participantIds.length} participants`);
                                 if (participantIds.length > 0) {
                                     // Enrich each participant with name and AI info
                                     participants = await Promise.all(participantIds.map(async (participantId) => {
@@ -531,14 +482,10 @@ export class ChatHandler {
                                 }
                             }
                         }
-                        else {
-                            console.error(`[ChatHandler] ⚠️ Group has no hashGroup property`);
-                        }
                     }
                 }
                 catch (error) {
-                    console.error(`[ChatHandler] ❌ ERROR fetching participants for topic ${topicId}:`, error);
-                    console.error(`[ChatHandler] ❌ Error stack:`, error.stack);
+                    console.error(`[ChatHandler] Error fetching participants for topic ${topicId}:`, error);
                     // Fallback on error: Add current user as participant
                     if (participants.length === 0) {
                         const currentUserId = this.nodeOneCore.ownerId;
@@ -548,7 +495,6 @@ export class ChatHandler {
                                     name: 'You',
                                     isAI: false
                                 }];
-                            console.error(`[ChatHandler] ✅ Using fallback participant after error: current user`);
                         }
                     }
                 }
@@ -556,10 +502,8 @@ export class ChatHandler {
                 let lastMessage = '';
                 let lastMessageTime = Date.now();
                 try {
-                    console.error(`[ChatHandler] 🔍 Fetching last message for topic ${topicId}...`);
                     const topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(topicId);
                     const messages = await topicRoom.retrieveAllMessages();
-                    console.error(`[ChatHandler] 📨 Topic ${topicId} has ${messages.length} messages`);
                     if (messages.length > 0) {
                         // Get the most recent message
                         const sortedMessages = messages.sort((a, b) => {
@@ -617,12 +561,6 @@ export class ChatHandler {
             const sortedConversations = conversations.sort((a, b) => b.lastActivity - a.lastActivity);
             // Apply pagination
             const paginatedConversations = sortedConversations.slice(offset, offset + limit);
-            console.error(`[ChatHandler] Returning ${paginatedConversations.length} conversations:`, paginatedConversations.map(c => ({
-                id: c.id,
-                name: c.name,
-                participantCount: c.participants?.length || 0,
-                firstParticipant: c.participants?.[0]
-            })));
             return {
                 success: true,
                 data: paginatedConversations
@@ -640,7 +578,6 @@ export class ChatHandler {
      * Get a single conversation
      */
     async getConversation(request) {
-        console.error('[ChatHandler] Get conversation:', request.conversationId);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Node not initialized');
@@ -683,7 +620,6 @@ export class ChatHandler {
      * Get current user
      */
     async getCurrentUser(request) {
-        console.error('[ChatHandler] Get current user');
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.ownerId) {
                 // Fallback to state manager
@@ -744,7 +680,6 @@ export class ChatHandler {
      * Add participants to a conversation
      */
     async addParticipants(request) {
-        console.error('[ChatHandler] Add participants:', request);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -756,7 +691,6 @@ export class ChatHandler {
             }
             // Add participants
             // TODO: Implement actual participant addition logic
-            console.error('[ChatHandler] Adding participants:', request.participantIds);
             return {
                 success: true,
                 data: {
@@ -777,7 +711,6 @@ export class ChatHandler {
      * Clear a conversation
      */
     async clearConversation(request) {
-        console.error('[ChatHandler] Clear conversation:', request.conversationId);
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -789,7 +722,6 @@ export class ChatHandler {
             }
             // Clear conversation
             // TODO: Implement actual clear logic
-            console.error('[ChatHandler] Clearing conversation:', request.conversationId);
             return { success: true };
         }
         catch (error) {
@@ -804,7 +736,6 @@ export class ChatHandler {
      * Edit a message
      */
     async editMessage(request) {
-        console.error('[ChatHandler] Edit message:', request.messageId);
         try {
             if (!this.messageVersionManager) {
                 throw new Error('Message version manager not initialized');
@@ -832,7 +763,6 @@ export class ChatHandler {
      * Delete a message
      */
     async deleteMessage(request) {
-        console.error('[ChatHandler] Delete message:', request.messageId);
         try {
             if (!this.messageVersionManager) {
                 throw new Error('Message version manager not initialized');
@@ -853,7 +783,6 @@ export class ChatHandler {
      * Get message history
      */
     async getMessageHistory(request) {
-        console.error('[ChatHandler] Get message history:', request.messageId);
         try {
             if (!this.messageVersionManager) {
                 throw new Error('Message version manager not initialized');
@@ -876,7 +805,6 @@ export class ChatHandler {
      * Export message credential
      */
     async exportMessageCredential(request) {
-        console.error('[ChatHandler] Export message credential:', request.messageId);
         try {
             if (!this.messageAssertionManager) {
                 throw new Error('Message assertion manager not initialized');
@@ -899,7 +827,6 @@ export class ChatHandler {
      * Verify message assertion
      */
     async verifyMessageAssertion(request) {
-        console.error('[ChatHandler] Verify message assertion');
         try {
             if (!this.messageAssertionManager) {
                 throw new Error('Message assertion manager not initialized');

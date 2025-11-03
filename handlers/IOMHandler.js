@@ -106,12 +106,8 @@ export class IOMHandler {
                 baseUrl = this.webUrl;
             }
             else {
-                // Fallback: derive from commServer URL
-                const commServerUrl = invitation.url || '';
-                const eddaDomain = commServerUrl.includes('dev.refinio.one')
-                    ? 'edda.dev.refinio.one'
-                    : 'edda.one';
-                baseUrl = `https://${eddaDomain}`;
+                // Fallback: use lama.one
+                baseUrl = 'https://lama.one';
             }
             // Construct the invitation URL with proper path based on mode
             // IoM: /invites/inviteDevice/?invited=true (for device pairing)
@@ -143,7 +139,7 @@ export class IOMHandler {
     }
     /**
      * Accept pairing invitation - delegates to ConnectionsModel.pairing
-     * Includes retry logic for reliability (following one.leute pattern)
+     * Fails fast on errors (no retries)
      */
     async acceptPairingInvitation(request) {
         try {
@@ -190,34 +186,12 @@ export class IOMHandler {
             }
             console.log('[IOMHandler] Accepting invitation with token:', String(token).substring(0, 20) + '...');
             console.log('[IOMHandler] Connection URL:', url);
-            // Retry logic following one.leute pattern
-            const maxTries = 4;
-            const retryDelay = 2000; // 2 seconds
-            let lastError;
-            for (let i = 0; i <= maxTries; i++) {
-                try {
-                    // Use one.models pairing API
-                    await this.nodeOneCore.connectionsModel.pairing.connectUsingInvitation(invitation);
-                    console.log('[IOMHandler] ✅ Connected using invitation');
-                    return {
-                        success: true,
-                        message: 'Invitation accepted successfully'
-                    };
-                }
-                catch (error) {
-                    console.error(`[IOMHandler] Pairing attempt ${i + 1}/${maxTries + 1} failed:`, error);
-                    lastError = error;
-                    // Wait before retry (except on last attempt)
-                    if (i < maxTries) {
-                        await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    }
-                }
-            }
-            // All retries failed
-            console.error('[IOMHandler] ❌ Failed to accept invitation after all retries');
+            // Use one.models pairing API - fail fast, no retries
+            await this.nodeOneCore.connectionsModel.pairing.connectUsingInvitation(invitation);
+            console.log('[IOMHandler] ✅ Connected using invitation');
             return {
-                success: false,
-                error: lastError?.message || 'Failed to accept pairing invitation after all retries'
+                success: true,
+                message: 'Invitation accepted successfully'
             };
         }
         catch (error) {

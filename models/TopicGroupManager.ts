@@ -179,7 +179,13 @@ export class TopicGroupManager {
         $type$: 'HashGroup' as const,
         members: participants
       };
+      console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${participants.length} members`);
       const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(hashGroup as any);
+      console.log(`[TopicGroupManager] 🔍 storeUnversionedObject returned:`, JSON.stringify(storedHashGroup, null, 2));
+
+      if (!storedHashGroup || !storedHashGroup.hash) {
+        throw new Error(`[TopicGroupManager] storeUnversionedObject failed for HashGroup: ${JSON.stringify(storedHashGroup)}`);
+      }
 
       // 2. Create Group referencing the HashGroup
       const group = {
@@ -188,11 +194,18 @@ export class TopicGroupManager {
         hashGroup: storedHashGroup.hash
       };
 
+      console.log(`[TopicGroupManager] 🔍 About to store Group:`, JSON.stringify(group, null, 2));
+
       // Store the group
       const storedGroup: any = await this.storageDeps.storeVersionedObject(group as any);
+
+      if (!storedGroup || !storedGroup.idHash) {
+        throw new Error(`[TopicGroupManager] storeVersionedObject failed for Group: ${JSON.stringify(storedGroup)}`);
+      }
+
       const groupIdHash = storedGroup.idHash;
 
-      console.log(`[TopicGroupManager] Created group ${groupName} with ${participants.length} persons`);
+      console.log(`[TopicGroupManager] Created group ${groupName} with ${participants.length} persons, hashGroup: ${String(group.hashGroup).substring(0, 8)}`);
       console.log(`[TopicGroupManager] Persons:`, participants.map((p: any) => String(p).substring(0, 8)).join(', '));
 
       // Cache the group and add to allowed list
@@ -492,7 +505,13 @@ export class TopicGroupManager {
       $type$: 'HashGroup' as const,
       members: participantIds  // All participants including node owner, AIs, other contacts
     };
+    console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${participantIds.length} members`);
     const storedHashGroup: any = await this.storageDeps.storeUnversionedObject(hashGroup as any);
+    console.log(`[TopicGroupManager] 🔍 storeUnversionedObject returned:`, JSON.stringify(storedHashGroup, null, 2));
+
+    if (!storedHashGroup || !storedHashGroup.hash) {
+      throw new Error(`[TopicGroupManager] storeUnversionedObject failed for HashGroup: ${JSON.stringify(storedHashGroup)}`);
+    }
 
     // 2. Create Group referencing the HashGroup
     const group = {
@@ -501,11 +520,18 @@ export class TopicGroupManager {
       hashGroup: storedHashGroup.hash
     };
 
+    console.log(`[TopicGroupManager] 🔍 About to store Group:`, JSON.stringify(group, null, 2));
+
     // Store the group
     const storedGroup: any = await this.storageDeps.storeVersionedObject(group as any);
+
+    if (!storedGroup || !storedGroup.idHash) {
+      throw new Error(`[TopicGroupManager] storeVersionedObject failed for Group: ${JSON.stringify(storedGroup)}`);
+    }
+
     const groupIdHash = storedGroup.idHash;
 
-    console.log(`[TopicGroupManager] Created group ${groupName} with ${participantIds.length} persons`);
+    console.log(`[TopicGroupManager] Created group ${groupName} with ${participantIds.length} persons, hashGroup: ${String(group.hashGroup).substring(0, 8)}`);
     console.log(`[TopicGroupManager] Persons:`, participantIds.map(p => String(p).substring(0, 8)).join(', '));
 
     // Cache the group and add to allowed list
@@ -564,7 +590,7 @@ export class TopicGroupManager {
       throw new Error('TopicModel not initialized');
     }
 
-    // Create the topic
+    // Create the topic (without group - privacy-preserving)
     // Each participant always owns their own channel
     console.log(`[TopicGroupManager] 🔍 DEBUG Calling topicModel.createGroupTopic("${topicName}", "${topicId}", owner)`);
     const topic: any = await this.oneCore.topicModel.createGroupTopic(
@@ -785,7 +811,7 @@ export class TopicGroupManager {
    * @returns {Promise<SHA256IdHash<Group> | null>} The group ID hash or null if not found
    */
   async getGroupForTopic(topicId: any): Promise<SHA256IdHash<any> | null> {
-    console.log(`[TopicGroupManager] Querying IdAccess for group in topic: ${topicId}`);
+    console.log(`[TopicGroupManager] Querying for group in topic: ${topicId}`);
 
     // First check cache
     if (this.conversationGroups.has(topicId)) {
@@ -795,33 +821,27 @@ export class TopicGroupManager {
     }
 
     try {
-      // Calculate the channel ID hash for this topic (owner = our person ID)
-      const channelIdHash: any = await this.storageDeps.calculateIdHashOfObj({
-        $type$: 'ChannelInfo',
-        id: topicId,
-        owner: this.oneCore.ownerId
-      });
+      // CRITICAL: Use IdAccess reverse maps to find group (privacy-preserving)
+      // Query topic to get its channel, then query IdAccess for that channel
+      const topic = await this.oneCore.topicModel.topics.queryById(topicId);
 
-      console.log(`[TopicGroupManager] Calculated channel ID hash: ${String(channelIdHash).substring(0, 8)}`);
+      if (topic && topic.channel) {
+        // Query IdAccess reverse maps to find which group has access to this channel
+        const idAccessHashes = await getAllEntries(topic.channel, 'IdAccess');
 
-      // Query IdAccess objects by channel ID using reverse map
+        for (const idAccessHash of idAccessHashes) {
+          const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+          const idAccess: any = await getObject(idAccessHash);
 
-      const idAccessHashes: any = await getAllEntries(channelIdHash, 'IdAccess');
-      console.log(`[TopicGroupManager] Found ${idAccessHashes.length} IdAccess objects for channel`);
+          if (idAccess && idAccess.group && idAccess.group.length > 0) {
+            const groupIdHash = idAccess.group[0];
+            console.log(`[TopicGroupManager] Found group via IdAccess reverse map: ${String(groupIdHash).substring(0, 8)}`);
 
-      // Find the first IdAccess with a group
-      for (const idAccessHash of idAccessHashes) {
-        const result: any = await this.storageDeps.getObject(idAccessHash);
-        const idAccess: any = result.obj;
+            // Cache it for future lookups
+            this.conversationGroups.set(topicId, groupIdHash);
 
-        if (idAccess && idAccess.group && idAccess.group.length > 0) {
-          const groupIdHash = idAccess.group[0];
-          console.log(`[TopicGroupManager] Found group in IdAccess: ${String(groupIdHash).substring(0, 8)}`);
-
-          // Cache it for future lookups
-          this.conversationGroups.set(topicId, groupIdHash);
-
-          return groupIdHash;
+            return groupIdHash;
+          }
         }
       }
 
@@ -955,7 +975,7 @@ export class TopicGroupManager {
    * Handle a received Group object
    * Called either from the event listener or explicitly when a group is received
    */
-  private async handleReceivedGroup(groupIdHash: any, group: any): Promise<void> {
+  async handleReceivedGroup(groupIdHash: any, group: any): Promise<void> {
     console.log(`[TopicGroupManager] Processing received Group: ${group.name}`);
 
     try {
@@ -1020,10 +1040,9 @@ export class TopicGroupManager {
         try {
           await this.oneCore.topicModel.topics.queryById(topicId);
         } catch (error) {
-          // Topic doesn't exist locally - create a reference
+          // Topic doesn't exist locally - create a reference (group will be found via IdAccess)
           console.log(`[TopicGroupManager] Creating local topic reference for ${topicId}`);
-          const topic: any = await this.oneCore.topicModel.createGroupTopic(topicId, topicId, this.oneCore.ownerId);
-          await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
+          await this.oneCore.topicModel.createGroupTopic(topicId, topicId, this.oneCore.ownerId);
           console.log(`[TopicGroupManager] ✅ Created local topic reference`);
         }
       } else {
