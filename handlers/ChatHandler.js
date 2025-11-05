@@ -114,23 +114,8 @@ export class ChatHandler {
             else {
                 await topicRoom.sendMessage(request.content, undefined, channelOwner);
             }
-            //  **CRITICAL**: Trigger AI response if conversation has AI participant
-            // This must happen AFTER the user's message is sent
-            if (this.nodeOneCore.aiAssistantModel) {
-                const isAITopic = this.nodeOneCore.aiAssistantModel.isAITopic(request.conversationId);
-                if (isAITopic) {
-                    // Trigger AI response in background (don't await - let it stream independently)
-                    // Using setTimeout(0) for browser compatibility (equivalent to setImmediate in Node.js)
-                    setTimeout(async () => {
-                        try {
-                            await this.nodeOneCore.aiAssistantModel.processMessage(request.conversationId, request.content, userId);
-                        }
-                        catch (aiError) {
-                            console.error('[ChatHandler] AI response failed:', aiError);
-                        }
-                    }, 0);
-                }
-            }
+            // AI response is handled by AIMessageListener (not here)
+            // AIMessageListener detects the channel update and triggers processMessage
             return {
                 success: true,
                 data: {
@@ -403,8 +388,8 @@ export class ChatHandler {
                         const group = groupResult.obj;
                         if (group.hashGroup) {
                             const hashGroup = await getObject(group.hashGroup);
-                            if (hashGroup.members) {
-                                const participantIds = Array.from(hashGroup.members).map(id => String(id));
+                            if (hashGroup.person) {
+                                const participantIds = Array.from(hashGroup.person).map(id => String(id));
                                 if (participantIds.length > 0) {
                                     // Enrich each participant with name and AI info
                                     participants = await Promise.all(participantIds.map(async (participantId) => {

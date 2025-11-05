@@ -126,7 +126,7 @@ export class TopicGroupManager {
             // 1. Create HashGroup with members
             const hashGroup = {
                 $type$: 'HashGroup',
-                members: participants
+                person: new Set(participants)
             };
             console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${participants.length} members`);
             const storedHashGroup = await this.storageDeps.storeUnversionedObject(hashGroup);
@@ -147,12 +147,13 @@ export class TopicGroupManager {
                 throw new Error(`[TopicGroupManager] storeVersionedObject failed for Group: ${JSON.stringify(storedGroup)}`);
             }
             const groupIdHash = storedGroup.idHash;
-            console.log(`[TopicGroupManager] Created group ${groupName} with ${participants.length} persons, hashGroup: ${String(group.hashGroup).substring(0, 8)}`);
+            const hashGroupHash = storedHashGroup.hash;
+            console.log(`[TopicGroupManager] Created group ${groupName} with ${participants.length} persons, hashGroup: ${String(hashGroupHash).substring(0, 8)}`);
             console.log(`[TopicGroupManager] Persons:`, participants.map((p) => String(p).substring(0, 8)).join(', '));
-            // Cache the group and add to allowed list
+            // Cache the group and add HashGroup to allowed list (for CHUM sync)
             this.conversationGroups.set(topicId, groupIdHash);
-            this.allowedGroups.add(groupIdHash);
-            console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} to allowed groups`);
+            this.allowedGroups.add(hashGroupHash);
+            console.log(`[TopicGroupManager] Added HashGroup ${String(hashGroupHash).substring(0, 8)} to allowed groups`);
             // IMPORTANT: Do NOT grant any access to the Group object itself
             // This would cause CHUM to try to sync the Group object, which is rejected
             // Groups stay local - only IdAccess objects referencing them are shared
@@ -278,7 +279,7 @@ export class TopicGroupManager {
             // 3. Create new HashGroup with added member
             const newHashGroup = {
                 $type$: 'HashGroup',
-                members: [...currentMembers, personId]
+                person: new Set([...currentMembers, personId])
             };
             const storedHashGroup = await this.storageDeps.storeUnversionedObject(newHashGroup);
             // 4. Create new Group version pointing to new HashGroup
@@ -396,7 +397,7 @@ export class TopicGroupManager {
         // 1. Create HashGroup with members
         const hashGroup = {
             $type$: 'HashGroup',
-            members: participantIds // All participants including node owner, AIs, other contacts
+            person: new Set(participantIds) // All participants including node owner, AIs, other contacts
         };
         console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${participantIds.length} members`);
         const storedHashGroup = await this.storageDeps.storeUnversionedObject(hashGroup);
@@ -417,16 +418,17 @@ export class TopicGroupManager {
             throw new Error(`[TopicGroupManager] storeVersionedObject failed for Group: ${JSON.stringify(storedGroup)}`);
         }
         const groupIdHash = storedGroup.idHash;
-        console.log(`[TopicGroupManager] Created group ${groupName} with ${participantIds.length} persons, hashGroup: ${String(group.hashGroup).substring(0, 8)}`);
+        const hashGroupHash = storedHashGroup.hash;
+        console.log(`[TopicGroupManager] Created group ${groupName} with ${participantIds.length} persons, hashGroup: ${String(hashGroupHash).substring(0, 8)}`);
         console.log(`[TopicGroupManager] Persons:`, participantIds.map(p => String(p).substring(0, 8)).join(', '));
-        // Cache the group and add to allowed list
+        // Cache the group and add HashGroup to allowed list (for CHUM sync)
         this.conversationGroups.set(topicId, groupIdHash);
-        this.allowedGroups.add(groupIdHash);
-        console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} to allowed groups`);
-        // Create an AffirmationCertificate for the Group (cryptographic attestation of validity)
+        this.allowedGroups.add(hashGroupHash);
+        console.log(`[TopicGroupManager] Added HashGroup ${String(hashGroupHash).substring(0, 8)} to allowed groups`);
+        // Create an AffirmationCertificate for the HashGroup (cryptographic attestation of validity)
         // This creates: License + Certificate + Signature (all unversioned objects)
-        const certResult = await this.oneCore.leuteModel.trust.certify('AffirmationCertificate', { data: groupIdHash }, this.oneCore.ownerId);
-        console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for Group ${String(groupIdHash).substring(0, 8)}`);
+        const certResult = await this.oneCore.leuteModel.trust.certify('AffirmationCertificate', { data: hashGroupHash }, this.oneCore.ownerId);
+        console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for HashGroup ${String(hashGroupHash).substring(0, 8)}`);
         console.log(`[TopicGroupManager] ✅ Signature: ${String(certResult.signature.hash).substring(0, 8)}, License: ${String(certResult.license.hash).substring(0, 8)}`);
         // Grant access to all objects - CHUM will sync based on new access rights
         await this.storageDeps.createAccess([
@@ -557,7 +559,7 @@ export class TopicGroupManager {
             // 1. Create HashGroup with members
             const hashGroup = {
                 $type$: 'HashGroup',
-                members: allParticipants
+                person: new Set(allParticipants)
             };
             const storedHashGroup = await this.storageDeps.storeUnversionedObject(hashGroup);
             // 2. Create Group referencing the HashGroup
@@ -603,7 +605,7 @@ export class TopicGroupManager {
             // 3. Create new HashGroup with added members
             const newHashGroup = {
                 $type$: 'HashGroup',
-                members: [...currentMembers, ...newMembers]
+                person: new Set([...currentMembers, ...newMembers])
             };
             const storedHashGroup = await this.storageDeps.storeUnversionedObject(newHashGroup);
             // 4. Create new Group version pointing to new HashGroup

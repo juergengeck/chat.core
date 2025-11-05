@@ -394,11 +394,11 @@ export class ContactsHandler {
     async createGroup(name, memberIds) {
         try {
             // Create core Group object directly
-            // Create HashGroup with members first
-            const members = memberIds ? memberIds.map(id => ensureIdHash(id)) : [];
+            // Create HashGroup with members first (HashGroup.person is a Set in new one.core)
+            const memberArray = memberIds ? memberIds.map(id => ensureIdHash(id)) : [];
             const hashGroupObj = {
                 $type$: 'HashGroup',
-                members
+                person: new Set(memberArray)
             };
             const hashGroup = await storeUnversionedObject(hashGroupObj);
             // Create Group referencing HashGroup
@@ -414,7 +414,7 @@ export class ContactsHandler {
                 group: {
                     id: result.idHash,
                     name: group.name,
-                    memberCount: members.length
+                    memberCount: memberArray.length
                 }
             };
         }
@@ -437,19 +437,16 @@ export class ContactsHandler {
             const group = groupResult.obj;
             // Resolve HashGroup to get current members
             const hashGroupResult = await getObject(group.hashGroup);
-            const members = [...hashGroupResult.members];
-            // Add new members (deduplicate)
-            const existingPersons = new Set(members);
+            const members = new Set(hashGroupResult.person);
+            // Add new members
             for (const contactId of contactIds) {
                 const personIdHash = ensureIdHash(contactId);
-                if (!existingPersons.has(personIdHash)) {
-                    members.push(personIdHash);
-                }
+                members.add(personIdHash);
             }
             // Create new HashGroup with updated members
             const newHashGroup = await storeUnversionedObject({
                 $type$: 'HashGroup',
-                members
+                person: members
             });
             // Update Group to reference new HashGroup
             await storeVersionedObject({
@@ -479,14 +476,16 @@ export class ContactsHandler {
             const group = groupResult.obj;
             // Resolve HashGroup to get current members
             const hashGroupResult = await getObject(group.hashGroup);
-            let members = [...hashGroupResult.members];
+            const members = new Set(hashGroupResult.person);
             // Remove members
-            const contactSet = new Set(contactIds);
-            members = members.filter(personId => !contactSet.has(personId));
+            for (const contactId of contactIds) {
+                const personIdHash = ensureIdHash(contactId);
+                members.delete(personIdHash);
+            }
             // Create new HashGroup with updated members
             const newHashGroup = await storeUnversionedObject({
                 $type$: 'HashGroup',
-                members
+                person: members
             });
             // Update Group to reference new HashGroup
             await storeVersionedObject({
@@ -519,7 +518,7 @@ export class ContactsHandler {
             const group = result.obj;
             // Resolve HashGroup to get members
             const hashGroupResult = await getObject(group.hashGroup);
-            const memberIds = hashGroupResult.members;
+            const memberIds = hashGroupResult.person;
             // Get member details
             const members = [];
             const someoneObjects = await this.nodeOneCore.leuteModel.others();
@@ -557,7 +556,7 @@ export class ContactsHandler {
             // Create empty HashGroup (soft delete)
             const emptyHashGroup = await storeUnversionedObject({
                 $type$: 'HashGroup',
-                members: []
+                person: new Set()
             });
             // Update Group to reference empty HashGroup
             await storeVersionedObject({
