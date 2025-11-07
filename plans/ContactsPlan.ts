@@ -1,9 +1,9 @@
 /**
- * Contacts Handler (Pure Business Logic)
+ * Contacts Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for contact management operations.
+ * Transport-agnostic plan for contact management operations.
  * Can be used from both Electron IPC and Web Worker contexts.
- * Pattern based on refinio.api handler architecture.
+ * Pattern based on refinio.api architecture.
  */
 
 import { Group, Person, HashGroup } from '@refinio/one.core/lib/recipes.js';
@@ -48,12 +48,12 @@ export interface GetContactsWithTrustResponse {
 }
 
 /**
- * ContactsHandler - Pure business logic for contact operations
+ * ContactsPlan - Pure business logic for contact operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  */
-export class ContactsHandler {
+export class ContactsPlan {
   private nodeOneCore: any;
 
   constructor(nodeOneCore: any) {
@@ -168,7 +168,7 @@ export class ContactsHandler {
         contacts: allContacts
       };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to get contacts:', error);
+      console.error('[ContactsPlan] Failed to get contacts:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -215,7 +215,7 @@ export class ContactsHandler {
 
       return { success: true, contacts: contactsWithTrust };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to get contacts with trust:', error);
+      console.error('[ContactsPlan] Failed to get contacts with trust:', error);
       return { success: false, error: (error as Error).message };
     }
   }
@@ -232,7 +232,7 @@ export class ContactsHandler {
       const pendingContacts = this.nodeOneCore.quicTransport.leuteModel.getPendingContacts();
       return { success: true, pendingContacts };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to get pending contacts:', error);
+      console.error('[ContactsPlan] Failed to get pending contacts:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -256,7 +256,7 @@ export class ContactsHandler {
 
       return { success: true, pendingContact };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to get pending contact:', error);
+      console.error('[ContactsPlan] Failed to get pending contact:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -276,7 +276,7 @@ export class ContactsHandler {
       const result = await this.nodeOneCore.quicTransport.trustManager.acceptContact(personId, options);
       return result;
     } catch (error) {
-      console.error('[ContactsHandler] Failed to accept contact:', error);
+      console.error('[ContactsPlan] Failed to accept contact:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -296,7 +296,7 @@ export class ContactsHandler {
       const result = await this.nodeOneCore.quicTransport.trustManager.blockContact(personId, reason);
       return result;
     } catch (error) {
-      console.error('[ContactsHandler] Failed to block contact:', error);
+      console.error('[ContactsPlan] Failed to block contact:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -316,7 +316,7 @@ export class ContactsHandler {
       const result = await this.nodeOneCore.quicTransport.leuteModel.rejectContact(pendingId, reason);
       return result;
     } catch (error) {
-      console.error('[ContactsHandler] Failed to reject contact:', error);
+      console.error('[ContactsPlan] Failed to reject contact:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -334,11 +334,10 @@ export class ContactsHandler {
       }
 
       // Create Person object with proper type
-
-      const personData: { $type$: 'Person'; name: string; email: string } = {
+      const personData: { $type$: 'Person'; email: string; name: string } = {
         $type$: 'Person' as const,
-        name: personInfo.name,
-        email: personInfo.email
+        email: personInfo.email,
+        name: personInfo.name
       };
 
       const personResult = await storeVersionedObject(personData);
@@ -347,13 +346,20 @@ export class ContactsHandler {
       // Get my identity
       const myId = await this.nodeOneCore.leuteModel.myMainIdentity();
 
+      // Store PersonName object first (personDescription contains hash-links)
+      const personNameObj = {
+        $type$: 'PersonName' as const,
+        name: personInfo.name
+      };
+      const personNameResult = await storeUnversionedObject(personNameObj);
+      const personNameHash = personNameResult.hash;
+
       // Create Profile object directly (following AIContactManager pattern)
       const profileObj: {
         $type$: 'Profile';
         profileId: string;
         personId: any;
         owner: any;
-        name: string;
         personDescription: any[];
         communicationEndpoint: any[];
       } = {
@@ -361,8 +367,7 @@ export class ContactsHandler {
         profileId: `contact-${personInfo.email.replace(/[^a-zA-Z0-9]/g, '_')}`,
         personId: personIdHash,
         owner: myId,
-        name: personInfo.name,
-        personDescription: [],
+        personDescription: [personNameHash],
         communicationEndpoint: []
       };
 
@@ -398,7 +403,7 @@ export class ContactsHandler {
         }
       };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to add contact:', error);
+      console.error('[ContactsPlan] Failed to add contact:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -418,7 +423,7 @@ export class ContactsHandler {
       await this.nodeOneCore.leuteModel.removeSomeoneElse(contactId as any);
       return { success: true };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to remove contact:', error);
+      console.error('[ContactsPlan] Failed to remove contact:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -438,7 +443,7 @@ export class ContactsHandler {
       await this.nodeOneCore.quicTransport.leuteModel.revokeContactVC(personId);
       return { success: true };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to revoke contact VC:', error);
+      console.error('[ContactsPlan] Failed to revoke contact VC:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -473,7 +478,7 @@ export class ContactsHandler {
 
       return { success: true, groups: groupList };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to get groups:', error);
+      console.error('[ContactsPlan] Failed to get groups:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -514,7 +519,7 @@ export class ContactsHandler {
         }
       };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to create group:', error);
+      console.error('[ContactsPlan] Failed to create group:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -558,7 +563,7 @@ export class ContactsHandler {
 
       return { success: true };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to add contacts to group:', error);
+      console.error('[ContactsPlan] Failed to add contacts to group:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -602,7 +607,7 @@ export class ContactsHandler {
 
       return { success: true };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to remove contacts from group:', error);
+      console.error('[ContactsPlan] Failed to remove contacts from group:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -648,7 +653,7 @@ export class ContactsHandler {
 
       return { success: true, members };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to get group members:', error);
+      console.error('[ContactsPlan] Failed to get group members:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -683,7 +688,7 @@ export class ContactsHandler {
 
       return { success: true };
     } catch (error) {
-      console.error('[ContactsHandler] Failed to delete group:', error);
+      console.error('[ContactsPlan] Failed to delete group:', error);
       return {
         success: false,
         error: (error as Error).message

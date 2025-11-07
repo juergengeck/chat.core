@@ -1,9 +1,9 @@
 /**
- * Contacts Handler (Pure Business Logic)
+ * Contacts Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for contact management operations.
+ * Transport-agnostic plan for contact management operations.
  * Can be used from both Electron IPC and Web Worker contexts.
- * Pattern based on refinio.api handler architecture.
+ * Pattern based on refinio.api architecture.
  */
 export interface Contact {
     id: string;
@@ -31,12 +31,12 @@ export interface GetContactsWithTrustResponse {
     error?: string;
 }
 /**
- * ContactsHandler - Pure business logic for contact operations
+ * ContactsPlan - Pure business logic for contact operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - nodeOneCore: Platform-specific ONE.core instance
  */
-export declare class ContactsHandler {
+export declare class ContactsPlan {
     private nodeOneCore;
     constructor(nodeOneCore: any);
     /**
@@ -159,4 +159,4 @@ export declare class ContactsHandler {
         error?: string;
     }>;
 }
-//# sourceMappingURL=ContactsHandler.d.ts.map
+//# sourceMappingURL=ContactsPlan.d.ts.map

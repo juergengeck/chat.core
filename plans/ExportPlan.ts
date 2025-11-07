@@ -1,7 +1,7 @@
 /**
- * Export Handler (Pure Business Logic)
+ * Export Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for content export operations.
+ * Transport-agnostic plan for content export operations.
  * Handles format conversion, HTML generation, and export preparation.
  * Platform-specific file operations (dialogs, fs) are injected.
  *
@@ -76,7 +76,7 @@ export interface ValidationResult {
 }
 
 /**
- * ExportHandler - Pure business logic for export operations
+ * ExportPlan - Pure business logic for export operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - implodeWrapper: HTML export service with implode functionality
@@ -84,7 +84,7 @@ export interface ValidationResult {
  * - htmlTemplate: HTML template generation service
  * - messageRetriever: Function to retrieve messages from a topic
  */
-export class ExportHandler {
+export class ExportPlan {
   private implodeWrapper: any;
   private formatter: any;
   private htmlTemplate: any;
@@ -107,7 +107,7 @@ export class ExportHandler {
    */
   async exportMessage(request: ExportMessageRequest): Promise<ExportMessageResponse> {
     try {
-      console.log('[ExportHandler] exportMessage called:', {
+      console.log('[ExportPlan] exportMessage called:', {
         format: request.format,
         contentLength: request.content.length
       });
@@ -168,7 +168,7 @@ export class ExportHandler {
         filters
       };
     } catch (error) {
-      console.error('[ExportHandler] Error exporting message:', error);
+      console.error('[ExportPlan] Error exporting message:', error);
       return {
         success: false,
         filename: '',
@@ -186,7 +186,7 @@ export class ExportHandler {
     request: ExportHtmlWithMicrodataRequest
   ): Promise<ExportHtmlWithMicrodataResponse> {
     try {
-      console.log('[ExportHandler] exportHtmlWithMicrodata called:', {
+      console.log('[ExportPlan] exportHtmlWithMicrodata called:', {
         topicId: request.topicId,
         format: request.format,
         options: request.options
@@ -218,7 +218,7 @@ export class ExportHandler {
 
       return result;
     } catch (error) {
-      console.error('[ExportHandler] Error exporting HTML with microdata:', error);
+      console.error('[ExportPlan] Error exporting HTML with microdata:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -282,11 +282,11 @@ export class ExportHandler {
   ): Promise<ExportHtmlWithMicrodataResponse> {
     try {
       // Step 1: Retrieve messages from TopicRoom
-      console.log('[ExportHandler] Retrieving messages for topic:', topicId);
+      console.log('[ExportPlan] Retrieving messages for topic:', topicId);
       const messages = await this.getMessagesFromTopic(topicId, options);
 
       if (messages.length === 0) {
-        console.log('[ExportHandler] No messages found for topic');
+        console.log('[ExportPlan] No messages found for topic');
         return {
           success: true,
           html: this.generateEmptyConversationHTML(topicId, options),
@@ -299,10 +299,10 @@ export class ExportHandler {
         };
       }
 
-      console.log(`[ExportHandler] Found ${messages.length} messages`);
+      console.log(`[ExportPlan] Found ${messages.length} messages`);
 
       // Step 2: Process messages with implode()
-      console.log('[ExportHandler] Processing messages with implode()...');
+      console.log('[ExportPlan] Processing messages with implode()...');
       const processedMessages = await this.processMessagesWithImplode(messages, options);
 
       // Check timeout
@@ -311,7 +311,7 @@ export class ExportHandler {
       }
 
       // Step 3: Generate HTML with formatting
-      console.log('[ExportHandler] Generating HTML document...');
+      console.log('[ExportPlan] Generating HTML document...');
       const metadata = await this.generateMetadata(topicId, messages, options);
       const htmlDocument = this.htmlTemplate.generateCompleteHTML({
         metadata,
@@ -323,7 +323,7 @@ export class ExportHandler {
 
       const fileSize = Buffer.byteLength(htmlDocument, 'utf8');
 
-      console.log(`[ExportHandler] Export completed successfully. File size: ${fileSize} bytes`);
+      console.log(`[ExportPlan] Export completed successfully. File size: ${fileSize} bytes`);
 
       return {
         success: true,
@@ -335,7 +335,7 @@ export class ExportHandler {
         }
       };
     } catch (error) {
-      console.error('[ExportHandler] Error in performExport:', error);
+      console.error('[ExportPlan] Error in performExport:', error);
       throw error;
     }
   }
@@ -349,7 +349,7 @@ export class ExportHandler {
     }
 
     // Placeholder implementation
-    console.log('[ExportHandler] TODO: Implement actual message retrieval from TopicRoom');
+    console.log('[ExportPlan] TODO: Implement actual message retrieval from TopicRoom');
     return [
       {
         hash: 'abc123def456789012345678901234567890123456789012345678901234567890',
@@ -392,7 +392,7 @@ export class ExportHandler {
 
         processedMessages.push(formattedMessage);
       } catch (error) {
-        console.error(`[ExportHandler] Error processing message ${message.hash}:`, error);
+        console.error(`[ExportPlan] Error processing message ${message.hash}:`, error);
         // Continue with other messages rather than failing entire export
         processedMessages.push(
           `<div class="message error">Error processing message: ${(error as Error).message}</div>`

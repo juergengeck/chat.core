@@ -1,9 +1,9 @@
 /**
- * Chat Handler (Pure Business Logic)
+ * Chat Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for chat operations.
+ * Transport-agnostic plan for chat operations.
  * Can be used from both Electron IPC and Web Worker contexts.
- * Pattern based on refinio.api handler architecture.
+ * Pattern based on refinio.api architecture.
  */
 export interface InitializeDefaultChatsRequest {
 }
@@ -44,7 +44,6 @@ export interface CreateConversationRequest {
     type?: string;
     participants?: any[];
     name?: string | null;
-    aiModelId?: string;
 }
 export interface CreateConversationResponse {
     success: boolean;
@@ -140,7 +139,7 @@ export interface VerifyMessageAssertionResponse {
     error?: string;
 }
 /**
- * ChatHandler - Pure business logic for chat operations
+ * ChatPlan - Pure business logic for chat operations
  *
  * Dependencies injected via constructor:
  * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, etc.
@@ -148,7 +147,7 @@ export interface VerifyMessageAssertionResponse {
  * - messageVersionManager: Message versioning manager
  * - messageAssertionManager: Message assertion/certificate manager
  */
-export declare class ChatHandler {
+export declare class ChatPlan {
     private nodeOneCore;
     private stateManager;
     private messageVersionManager;
@@ -219,4 +218,4 @@ export declare class ChatHandler {
      */
     verifyMessageAssertion(request: VerifyMessageAssertionRequest): Promise<VerifyMessageAssertionResponse>;
 }
-//# sourceMappingURL=ChatHandler.d.ts.map
+//# sourceMappingURL=ChatPlan.d.ts.map

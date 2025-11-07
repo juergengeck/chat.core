@@ -350,7 +350,7 @@ export class TopicGroupManager {
 
       // 2. Load existing HashGroup to get current members
       const hashGroupResult: any = await this.storageDeps.getObject(existingGroup.hashGroup);
-      const currentMembers: any = hashGroupResult.members || [];
+      const currentMembers: any = Array.from(hashGroupResult.person || new Set());
 
       // Check if the person is already in the group
       if (currentMembers.includes(personId)) {
@@ -743,7 +743,7 @@ export class TopicGroupManager {
 
       // 2. Load existing HashGroup to get current members
       const hashGroupResult: any = await this.storageDeps.getObject(existingGroup.hashGroup);
-      const currentMembers: any = hashGroupResult.members || [];
+      const currentMembers: any = Array.from(hashGroupResult.person || new Set());
 
       console.log(`[TopicGroupManager] Retrieved existing group with ${currentMembers.length} participants`);
       console.log(`[TopicGroupManager] Existing participants:`, currentMembers.map((p: any) => String(p).substring(0, 8)));
@@ -885,10 +885,14 @@ export class TopicGroupManager {
       throw new Error(`Group ${String(groupIdHash).substring(0, 8)} not found in storage`);
     }
 
-    console.log(`[TopicGroupManager] Retrieved group with ${group.person?.length || 0} participants`);
-    console.log(`[TopicGroupManager] Participants:`, (group.person || []).map((p: any) => String(p).substring(0, 8)));
+    // Load the HashGroup to get the members
+    const hashGroupResult: any = await this.storageDeps.getObject(group.hashGroup);
+    const members: any = Array.from(hashGroupResult.person || []);
 
-    if (!group.person || group.person.length === 0) {
+    console.log(`[TopicGroupManager] Retrieved group with ${members.length} participants`);
+    console.log(`[TopicGroupManager] Participants:`, members.map((p: any) => String(p).substring(0, 8)));
+
+    if (!members || members.length === 0) {
       console.log(`[TopicGroupManager] ⚠️  BROKEN GROUP DETECTED: Group ${String(groupIdHash).substring(0, 8)} has no participants`);
       console.log(`[TopicGroupManager] This is a legacy bug - removing from cache so it will be recreated`);
       this.conversationGroups.delete(topicId);
@@ -896,9 +900,9 @@ export class TopicGroupManager {
       throw new Error(`No group found for topic ${topicId}`);
     }
 
-    console.log(`[TopicGroupManager] ✅ Returning ${group.person.length} participants`);
+    console.log(`[TopicGroupManager] ✅ Returning ${members.length} participants`);
     console.log(`[TopicGroupManager] ========== GET PARTICIPANTS END ==========`);
-    return group.person;
+    return members;
   }
 
   /**

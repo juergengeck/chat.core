@@ -1,7 +1,7 @@
 /**
- * Feed-Forward Handler (Pure Business Logic)
+ * Feed-Forward Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for feed-forward knowledge sharing operations.
+ * Transport-agnostic plan for feed-forward knowledge sharing operations.
  * Can be used from both Electron IPC and Web Worker contexts.
  * Wraps FeedForwardManager with standardized request/response interfaces.
  */
@@ -80,12 +80,12 @@ export interface GetTrustScoreResponse {
     data?: any;
 }
 /**
- * FeedForwardHandler - Pure business logic for feed-forward operations
+ * FeedForwardPlan - Pure business logic for feed-forward operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - feedForwardManager: Platform-specific FeedForwardManager instance
  */
-export declare class FeedForwardHandler {
+export declare class FeedForwardPlan {
     private feedForwardManager;
     constructor(feedForwardManager: any);
     /**
@@ -117,4 +117,4 @@ export declare class FeedForwardHandler {
      */
     getTrustScore(request: GetTrustScoreRequest): Promise<GetTrustScoreResponse>;
 }
-//# sourceMappingURL=FeedForwardHandler.d.ts.map
+//# sourceMappingURL=FeedForwardPlan.d.ts.map

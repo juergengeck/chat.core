@@ -9,10 +9,11 @@
     "clean": "find . -name '*.js' -not -path './node_modules/*' -not -path './packages/*' -delete"
   },
   "exports": {
-    "./handlers/*": "./handlers/*",
+    "./plans/*": "./plans/*",
     "./services/*": "./services/*",
     "./models/*": "./models/*",
-    "./cache/*": "./cache/*"
+    "./recipes/*": "./recipes/*",
+    "./types/*": "./types/*"
   },
   "author": "lama.one Team",
   "license": "MIT",

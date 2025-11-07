@@ -20,10 +20,11 @@
     }
   },
   "include": [
-    "handlers/**/*",
+    "plans/**/*",
     "services/**/*",
     "models/**/*",
-    "recipes/**/*"
+    "recipes/**/*",
+    "types/**/*"
   ],
   "exclude": [
     "node_modules",

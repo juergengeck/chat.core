@@ -6,6 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Platform-agnostic chat/messaging business logic for LAMA applications.
 
+## IMPORTANT: Naming Convention
+
+**"handler" → "plan" terminology**
+
+All business logic classes use "plan" terminology throughout the codebase:
+- Class names: `ChatPlan`, `ContactsPlan`, `ExportPlan`, `FeedForwardPlan`
+- File names: `ChatPlan.ts`, `ContactsPlan.ts`, etc.
+- Variables: `chatPlan`, `contactsPlan`, etc.
+- Directory: `plans/` (not `handlers/`)
+
+When writing new code, always use "plan" terminology for these classes.
+
 ## Build Commands
 
 ```bash
@@ -15,9 +27,11 @@ npm run build
 # Watch mode for development
 npm run watch
 
-# Clean generated JS/map files (preserves packages/ and node_modules/)
+# Clean generated files: .js, .d.ts, .js.map (preserves packages/ and node_modules/)
 npm run clean
 ```
+
+**Note**: The clean command removes all `.js` files (except in packages/ and node_modules/). TypeScript also generates `.d.ts` and `.js.map` files alongside source files - these should be manually removed if needed.
 
 ## Architecture Overview
 
@@ -34,7 +48,7 @@ BUILD TIME:
 RUNTIME:
   Consuming app (lama.electron/lama.browser) imports chat.core
   Consuming app provides its own @refinio/* instances
-  chat.core handlers use injected dependencies
+  chat.core plans use injected dependencies
   Result: Single shared instance across entire app
 ```
 
@@ -46,22 +60,21 @@ RUNTIME:
 
 ```
 chat.core/
-├── handlers/              # Pure business logic handlers
-│   ├── ChatHandler.ts         # Message/conversation operations
-│   ├── ContactsHandler.ts     # Contact management
-│   ├── ExportHandler.ts       # Export/import operations
-│   ├── IOMHandler.ts          # Internet of Me integration
-│   └── FeedForwardHandler.ts  # Feed forward operations
+├── plans/                 # Pure business logic plans (RPC-style interfaces)
+│   ├── ChatPlan.ts            # Message/conversation operations
+│   ├── ContactsPlan.ts        # Contact management
+│   ├── ExportPlan.ts          # Export/import operations
+│   └── FeedForwardPlan.ts     # Feed forward operations
 ├── services/              # Reusable service layer
 │   ├── ContactService.ts      # Contact queries with AI detection
-│   └── ProfileService.ts      # Profile/avatar management
+│   ├── ProfileService.ts      # Profile/avatar management
+│   ├── P2PTopicService.ts     # P2P topic/channel creation
+│   └── ContactCreation.ts     # Helper for creating Profile/Someone objects
 ├── models/                # Domain models
-│   └── TopicGroupManager.ts
-├── cache/                 # Caching implementations
-│   ├── OneObjectCache.ts
-│   ├── RawChannelEntriesCache.ts
-│   ├── ChatAttachmentCache.ts
-│   └── BlobDescriptorCache.ts
+│   └── TopicGroupManager.ts   # Group validation & topic management
+├── recipes/               # ONE recipe definitions
+│   ├── LLMRecipe.ts           # LLM-related recipes
+│   └── index.ts               # Recipe exports
 ├── types/                 # Custom type definitions
 │   └── AvatarPreference.ts
 └── packages/              # Build-time only (git-ignored symlinks)
@@ -69,12 +82,12 @@ chat.core/
     └── one.models/
 ```
 
-### Handler Pattern (Dependency Injection)
+### Plan Pattern (Dependency Injection)
 
-All handlers follow this pattern:
+All plans follow this pattern:
 
 ```typescript
-export class ChatHandler {
+export class ChatPlan {
   constructor(
     private nodeOneCore: any,      // Platform's ONE.core instance
     private stateManager?: any,     // Optional platform services
@@ -89,22 +102,22 @@ export class ChatHandler {
 ```
 
 **Key Points**:
-- Handlers are transport-agnostic (work in Electron IPC, Web Workers, etc)
+- Plans are transport-agnostic (work in Electron IPC, Web Workers, etc)
 - All dependencies injected via constructor
 - Methods accept typed request objects, return typed response objects
 - No direct imports of platform-specific code
 
-### Services vs Handlers
+### Services vs Plans
 
-**Handlers**: RPC-style interfaces for transport layers (IPC, Workers)
+**Plans**: RPC-style interfaces for transport layers (IPC, Workers)
 - Request/Response pattern
 - Transport-agnostic
-- Examples: ChatHandler, ContactsHandler
+- Examples: ChatPlan, ContactsPlan, ExportPlan, FeedForwardPlan
 
 **Services**: Reusable business logic components
 - Direct method calls
-- Used by handlers or directly by platforms
-- Examples: ContactService (with AI detection, caching), ProfileService
+- Used by plans or directly by platforms
+- Examples: ContactService, ProfileService, P2PTopicService, ContactCreation
 
 ## Scope Boundaries
 
@@ -117,14 +130,15 @@ Chat-specific business logic that:
 - Is NOT AI-related (that's lama.core)
 
 **Contents**:
-- Chat/messaging operations (ChatHandler)
-- Contact management with AI detection (ContactService, ContactsHandler)
-- Topic/conversation management (TopicGroupManager)
+- Chat/messaging operations (ChatPlan)
+- Contact management with AI detection (ContactService, ContactsPlan)
+- Topic/conversation management with Group signature validation (TopicGroupManager)
 - Profile and avatar management (ProfileService)
-- Export/import operations (ExportHandler)
-- Internet of Me integration (IOMHandler)
-- Feed forward (FeedForwardHandler)
-- Caching utilities (OneObjectCache, etc.)
+- P2P topic creation (P2PTopicService)
+- Contact creation helpers (ContactCreation)
+- Export/import operations (ExportPlan)
+- Feed forward (FeedForwardPlan)
+- LLM recipes (recipes/)
 
 ### ❌ What is NOT in chat.core
 
@@ -163,13 +177,41 @@ Avatar preference and profile management:
 - Color persistence via AvatarPreference recipe
 - Deterministic color generation from personId
 
-### Caching Layer
+### P2PTopicService
 
-**OneObjectCache**: Generic object caching with event notifications
-- Type-safe caching for ONE objects
-- `onUpdate` and `onError` events
-- Runtime type checking
-- Used by RawChannelEntriesCache, ChatAttachmentCache, BlobDescriptorCache
+Platform-agnostic P2P (one-to-one) topic/channel creation:
+
+**Features**:
+- Creates topics for two participants
+- Generates consistent topic IDs (lexicographically sorted)
+- Sets up proper access permissions for both parties
+- Used after successful pairing to enable immediate messaging
+
+**Usage Pattern**:
+```typescript
+import { createP2PTopic } from '@chat/core/services/P2PTopicService.js';
+const topicRoom = await createP2PTopic(topicModel, localPersonId, remotePersonId);
+```
+
+### ContactCreation
+
+Helper for creating Profile and Someone objects for remote contacts:
+
+**Features**:
+- Creates Profile objects using ProfileModel API
+- Creates Someone objects for contact relationships
+- Prevents infinite loops with retry delay tracking
+- Platform-agnostic (works in browser and Node.js)
+
+### TopicGroupManager
+
+Topic management with Group signature validation:
+
+**Features**:
+- Validates Group objects using AffirmationCertificate (not raw Signatures)
+- Ensures only trusted, properly signed Groups are accepted
+- Prevents unauthorized group injection attacks
+- Integrates with one.trust certificate validation
 
 ## Type Safety
 
@@ -196,7 +238,7 @@ Projects reference via `file:` dependency:
 
 **Runtime behavior**:
 1. lama.electron loads its own one.core/one.models instances
-2. Creates handler instances: `new ChatHandler(nodeOneCore, stateManager)`
+2. Creates plan instances: `new ChatPlan(nodeOneCore, stateManager)` (currently ChatHandler)
 3. chat.core uses lama.electron's instances (single shared instance)
 
 ## Version Synchronization
@@ -214,5 +256,5 @@ Current versions (see package.json in each project):
 ## Related Documentation
 
 - `../ARCHITECTURE-REFACTORING-MINIMAL.md` - Overall refactoring plan
-- `../ONECORE-HANDLER-AUDIT.md` - Handler classification analysis
+- `../ONECORE-PLAN-AUDIT.md` - Plan classification analysis
 - Each consuming project has CLAUDE.md with platform-specific details

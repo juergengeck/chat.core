@@ -1,12 +1,12 @@
 /**
- * Chat Handler (Pure Business Logic)
+ * Chat Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for chat operations.
+ * Transport-agnostic plan for chat operations.
  * Can be used from both Electron IPC and Web Worker contexts.
- * Pattern based on refinio.api handler architecture.
+ * Pattern based on refinio.api architecture.
  */
 /**
- * ChatHandler - Pure business logic for chat operations
+ * ChatPlan - Pure business logic for chat operations
  *
  * Dependencies injected via constructor:
  * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, etc.
@@ -14,7 +14,7 @@
  * - messageVersionManager: Message versioning manager
  * - messageAssertionManager: Message assertion/certificate manager
  */
-export class ChatHandler {
+export class ChatPlan {
     nodeOneCore;
     stateManager;
     messageVersionManager;
@@ -44,7 +44,7 @@ export class ChatHandler {
             return { success: true };
         }
         catch (error) {
-            console.error('[ChatHandler] Error initializing default chats:', error);
+            console.error('[ChatPlan] Error initializing default chats:', error);
             return { success: false, error: error.message };
         }
     }
@@ -60,7 +60,7 @@ export class ChatHandler {
             return { success: true };
         }
         catch (error) {
-            console.error('[ChatHandler] Error in uiReady:', error);
+            console.error('[ChatPlan] Error in uiReady:', error);
             return { success: false, error: error.message };
         }
     }
@@ -69,7 +69,7 @@ export class ChatHandler {
      */
     async sendMessage(request) {
         // Disabled: Pollutes JSON-RPC stdout in MCP server
-        // console.error('[ChatHandler] Send message:', { conversationId: request.conversationId, content: request.content, senderId: request.senderId });
+        // console.error('[ChatPlan] Send message:', { conversationId: request.conversationId, content: request.content, senderId: request.senderId });
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
@@ -95,7 +95,7 @@ export class ChatHandler {
                 topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
             }
             catch (error) {
-                console.error('[ChatHandler] Topic does not exist for conversation:', request.conversationId);
+                console.error('[ChatPlan] Topic does not exist for conversation:', request.conversationId);
                 throw new Error(`Topic ${request.conversationId} not found. Topics should be created before sending messages.`);
             }
             // Determine if P2P or group
@@ -130,7 +130,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error sending message:', error);
+            console.error('[ChatPlan] Error sending message:', error);
             return {
                 success: false,
                 error: error.message
@@ -171,30 +171,12 @@ export class ChatHandler {
             // Map ObjectData to UI format - extract the actual message data and look up sender names
             const formattedMessages = await Promise.all(allMessages.map(async (msg) => {
                 let senderName = 'Unknown';
-                // Get sender from either author or data.sender (matches Electron pattern)
+                // Get sender from either author or data.sender
                 const sender = msg.author || msg.data?.sender;
-                // Look up sender name - check AI first (matches Electron pattern at chat.ts:367-420)
+                // Look up sender name from LeuteModel (works for ALL participants)
                 if (sender) {
                     try {
-                        // Check if sender is an AI contact FIRST
-                        let isAI = false;
-                        if (this.nodeOneCore.aiAssistantModel) {
-                            isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
-                            if (isAI) {
-                                // Get modelId for this AI person
-                                const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(sender);
-                                if (modelId) {
-                                    // Get LLM object for this model to get the display name
-                                    const llmObject = await this.nodeOneCore.llmObjectManager?.getByModelId?.(modelId);
-                                    senderName = llmObject?.name || modelId;
-                                }
-                                else {
-                                    senderName = 'AI Assistant';
-                                }
-                            }
-                        }
-                        // For non-AI senders, get their name from profiles
-                        if (!isAI && this.nodeOneCore.leuteModel) {
+                        if (this.nodeOneCore.leuteModel) {
                             // First check if sender is the current user
                             if (sender.toString() === this.nodeOneCore.ownerId?.toString()) {
                                 try {
@@ -208,7 +190,7 @@ export class ChatHandler {
                                     }
                                 }
                                 catch (e) {
-                                    console.error('[ChatHandler] Failed to get current user name:', e);
+                                    console.error('[ChatPlan] Failed to get current user name:', e);
                                 }
                             }
                             else {
@@ -234,7 +216,7 @@ export class ChatHandler {
                         }
                     }
                     catch (error) {
-                        console.error('[ChatHandler] Failed to get sender name:', error);
+                        console.error('[ChatPlan] Failed to get sender name:', error);
                     }
                 }
                 return {
@@ -266,7 +248,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error getting messages:', error);
+            console.error('[ChatPlan] Error getting messages:', error);
             return {
                 success: false,
                 error: error.message
@@ -303,24 +285,35 @@ export class ChatHandler {
                 this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topicId, true);
                 this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topicId, true);
             }
-            // If aiModelId is provided, register the topic with AIAssistantModel and trigger welcome
-            if (request.aiModelId && this.nodeOneCore.aiAssistantModel) {
+            // Detect AI participants and register topic automatically
+            console.error(`[ChatPlan] createConversation checking ${participants.length} participants for AI:`, participants);
+            if (this.nodeOneCore.aiAssistantModel) {
                 try {
-                    // Register the topic
-                    this.nodeOneCore.aiAssistantModel.aiTopicManager.registerAITopic(topicId, request.aiModelId);
-                    // Trigger welcome message generation in background
-                    setTimeout(async () => {
-                        try {
-                            await this.nodeOneCore.aiAssistantModel.aiMessageProcessor.handleNewTopic(topicId, request.aiModelId);
+                    for (const participantId of participants) {
+                        console.error(`[ChatPlan] Checking participant: ${participantId}`);
+                        if (this.nodeOneCore.aiAssistantModel.isAIPerson(participantId)) {
+                            const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
+                            if (modelId) {
+                                this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, modelId);
+                                console.error(`[ChatPlan] Detected AI participant ${participantId.substring(0, 8)} with model: ${modelId}`);
+                                // Trigger welcome message in background
+                                setImmediate(async () => {
+                                    try {
+                                        await this.nodeOneCore.aiAssistantModel.handleNewTopic(topicId);
+                                        console.error(`[ChatPlan] Welcome message generated for topic: ${topicId}`);
+                                    }
+                                    catch (error) {
+                                        console.error('[ChatPlan] Failed to generate welcome message:', error);
+                                    }
+                                });
+                                break; // Only register first AI participant
+                            }
                         }
-                        catch (error) {
-                            console.error('[ChatHandler] Failed to generate welcome message:', error);
-                        }
-                    }, 0);
+                    }
                 }
                 catch (error) {
-                    console.error('[ChatHandler] Failed to register AI topic:', error);
-                    // Non-fatal - topic creation still succeeds
+                    console.error('[ChatPlan] Failed to detect/register AI participants:', error);
+                    // Non-fatal - conversation creation succeeded
                 }
             }
             return {
@@ -330,14 +323,12 @@ export class ChatHandler {
                     name,
                     type,
                     participants: [String(userId), ...participants],
-                    created: Date.now(),
-                    isAITopic: !!request.aiModelId,
-                    aiModelId: request.aiModelId
+                    created: Date.now()
                 }
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error creating conversation:', error);
+            console.error('[ChatPlan] Error creating conversation:', error);
             return {
                 success: false,
                 error: error.message
@@ -359,16 +350,7 @@ export class ChatHandler {
             const conversations = await Promise.all(topics.map(async (topic) => {
                 const topicId = topic.id;
                 const name = topic.name;
-                // Check if AI topic
-                let isAITopic = false;
-                let aiModelId = null;
-                if (this.nodeOneCore.aiAssistantModel) {
-                    isAITopic = this.nodeOneCore.aiAssistantModel.isAITopic(topicId);
-                    if (isAITopic) {
-                        aiModelId = this.nodeOneCore.aiAssistantModel.getModelIdForTopic(topicId);
-                    }
-                }
-                // Get participants from topic group with enriched data (names, AI info)
+                // Get participants from topic group with enriched data (names)
                 let participants = [];
                 try {
                     let groupIdHash = null;
@@ -376,7 +358,7 @@ export class ChatHandler {
                         groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(topicId);
                     }
                     if (!groupIdHash) {
-                        console.warn(`[ChatHandler] Topic ${topicId} has no group - skipping participant retrieval (old/broken topic)`);
+                        console.warn(`[ChatPlan] Topic ${topicId} has no group - skipping participant retrieval (old/broken topic)`);
                         // Skip topics without groups - they're from old implementations
                         // Set empty participants array and continue
                         participants = [];
@@ -391,36 +373,11 @@ export class ChatHandler {
                             if (hashGroup.person) {
                                 const participantIds = Array.from(hashGroup.person).map(id => String(id));
                                 if (participantIds.length > 0) {
-                                    // Enrich each participant with name and AI info
+                                    // Enrich each participant with name from Leute model
                                     participants = await Promise.all(participantIds.map(async (participantId) => {
                                         let name = 'Unknown';
-                                        let isAI = false;
-                                        // Check if AI participant
-                                        if (this.nodeOneCore.aiAssistantModel) {
-                                            isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
-                                            if (isAI) {
-                                                // Get AI name from LLM object
-                                                const llmObjects = this.nodeOneCore.llmObjectManager?.getAllLLMObjects() || [];
-                                                const llmObject = llmObjects.find((obj) => {
-                                                    try {
-                                                        return this.nodeOneCore.aiAssistantModel?.matchesLLM(participantId, obj);
-                                                    }
-                                                    catch {
-                                                        return false;
-                                                    }
-                                                });
-                                                if (llmObject) {
-                                                    name = llmObject.name || llmObject.modelName || llmObject.modelId || 'AI Assistant';
-                                                }
-                                                else {
-                                                    // Fallback: try to get model ID from aiAssistantModel
-                                                    const modelId = this.nodeOneCore.aiAssistantModel?.getModelIdForPersonId?.(participantId);
-                                                    name = modelId || 'AI Assistant';
-                                                }
-                                            }
-                                        }
-                                        // Get name from Leute model for non-AI participants
-                                        if (!isAI && this.nodeOneCore.leuteModel) {
+                                        // Get name from Leute model for ALL participants
+                                        if (this.nodeOneCore.leuteModel) {
                                             try {
                                                 // Check if it's current user
                                                 if (participantId === this.nodeOneCore.ownerId) {
@@ -455,13 +412,12 @@ export class ChatHandler {
                                                 }
                                             }
                                             catch (error) {
-                                                console.warn(`[ChatHandler] Could not get name for participant ${participantId}:`, error);
+                                                console.warn(`[ChatPlan] Could not get name for participant ${participantId}:`, error);
                                             }
                                         }
                                         return {
                                             id: participantId,
-                                            name,
-                                            isAI
+                                            name
                                         };
                                     }));
                                 }
@@ -470,7 +426,7 @@ export class ChatHandler {
                     }
                 }
                 catch (error) {
-                    console.error(`[ChatHandler] Error fetching participants for topic ${topicId}:`, error);
+                    console.error(`[ChatPlan] Error fetching participants for topic ${topicId}:`, error);
                     // Fallback on error: Add current user as participant
                     if (participants.length === 0) {
                         const currentUserId = this.nodeOneCore.ownerId;
@@ -499,16 +455,6 @@ export class ChatHandler {
                         const recentMessage = sortedMessages[0];
                         lastMessage = recentMessage.data?.text || recentMessage.text || '';
                         lastMessageTime = recentMessage.creationTime ? new Date(recentMessage.creationTime).getTime() : Date.now();
-                        // Strip [THINKING] and [RESPONSE] tags from AI messages for preview
-                        // Extract only the response content if structured tags exist
-                        const responseMatch = lastMessage.match(/\[RESPONSE\]\s*([\s\S]*)(?:\[\/RESPONSE\]|$)/);
-                        if (responseMatch) {
-                            lastMessage = responseMatch[1].trim();
-                        }
-                        else {
-                            // Remove any thinking sections that might be present
-                            lastMessage = lastMessage.replace(/\[THINKING\][\s\S]*?\[\/THINKING\]\s*/g, '').trim();
-                        }
                         // Truncate message preview to 100 characters
                         if (lastMessage.length > 100) {
                             lastMessage = lastMessage.substring(0, 100) + '...';
@@ -517,17 +463,7 @@ export class ChatHandler {
                 }
                 catch (error) {
                     // If we can't fetch messages, just continue without preview
-                    console.warn(`[ChatHandler] Could not fetch last message for topic ${topicId}:`, error);
-                }
-                // Check if any participant is AI
-                const hasAIParticipant = participants.some((p) => p.isAI);
-                // Get model name from AI participant if available, otherwise use model ID
-                let modelName = aiModelId || null;
-                if (hasAIParticipant) {
-                    const aiParticipant = participants.find((p) => p.isAI);
-                    if (aiParticipant?.name) {
-                        modelName = aiParticipant.name;
-                    }
+                    console.warn(`[ChatPlan] Could not fetch last message for topic ${topicId}:`, error);
                 }
                 return {
                     id: topicId,
@@ -536,10 +472,7 @@ export class ChatHandler {
                     participants,
                     lastActivity: lastMessageTime,
                     lastMessage,
-                    unreadCount: 0,
-                    isAITopic,
-                    hasAIParticipant,
-                    modelName
+                    unreadCount: 0
                 };
             }));
             // Sort by last activity
@@ -552,7 +485,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error getting conversations:', error);
+            console.error('[ChatPlan] Error getting conversations:', error);
             return {
                 success: false,
                 error: error.message
@@ -579,22 +512,13 @@ export class ChatHandler {
                 createdAt: topic.creationTime ? new Date(topic.creationTime).toISOString() : new Date().toISOString(),
                 participants: topic.members || []
             };
-            // Add AI participant info
-            if (this.nodeOneCore.aiAssistantModel) {
-                const aiContacts = this.nodeOneCore.aiAssistantModel.getAllContacts();
-                conversation.isAITopic = this.nodeOneCore.aiAssistantModel.isAITopic(conversation.id);
-                conversation.hasAIParticipant = conversation.participants?.some((participantId) => aiContacts.some((contact) => contact.personId === participantId)) || false;
-                if (conversation.isAITopic) {
-                    conversation.aiModelId = this.nodeOneCore.aiAssistantModel.getModelIdForTopic(conversation.id);
-                }
-            }
             return {
                 success: true,
                 data: conversation
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error getting conversation:', error);
+            console.error('[ChatPlan] Error getting conversation:', error);
             return {
                 success: false,
                 error: error.message
@@ -642,7 +566,7 @@ export class ChatHandler {
                     }
                 }
                 catch (e) {
-                    console.warn('[ChatHandler] Could not get user profile:', e);
+                    console.warn('[ChatPlan] Could not get user profile:', e);
                 }
             }
             return {
@@ -654,7 +578,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error getting current user:', error);
+            console.error('[ChatPlan] Error getting current user:', error);
             return {
                 success: false,
                 error: error.message
@@ -685,7 +609,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error adding participants:', error);
+            console.error('[ChatPlan] Error adding participants:', error);
             return {
                 success: false,
                 error: error.message
@@ -710,7 +634,7 @@ export class ChatHandler {
             return { success: true };
         }
         catch (error) {
-            console.error('[ChatHandler] Error clearing conversation:', error);
+            console.error('[ChatPlan] Error clearing conversation:', error);
             return {
                 success: false,
                 error: error.message
@@ -737,7 +661,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error editing message:', error);
+            console.error('[ChatPlan] Error editing message:', error);
             return {
                 success: false,
                 error: error.message
@@ -757,7 +681,7 @@ export class ChatHandler {
             return { success: true };
         }
         catch (error) {
-            console.error('[ChatHandler] Error deleting message:', error);
+            console.error('[ChatPlan] Error deleting message:', error);
             return {
                 success: false,
                 error: error.message
@@ -779,7 +703,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error getting message history:', error);
+            console.error('[ChatPlan] Error getting message history:', error);
             return {
                 success: false,
                 error: error.message
@@ -801,7 +725,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error exporting credential:', error);
+            console.error('[ChatPlan] Error exporting credential:', error);
             return {
                 success: false,
                 error: error.message
@@ -823,7 +747,7 @@ export class ChatHandler {
             };
         }
         catch (error) {
-            console.error('[ChatHandler] Error verifying assertion:', error);
+            console.error('[ChatPlan] Error verifying assertion:', error);
             return {
                 success: false,
                 error: error.message
@@ -831,4 +755,4 @@ export class ChatHandler {
         }
     }
 }
-//# sourceMappingURL=ChatHandler.js.map
+//# sourceMappingURL=ChatPlan.js.map

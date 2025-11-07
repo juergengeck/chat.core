@@ -1,7 +1,7 @@
 /**
- * Export Handler (Pure Business Logic)
+ * Export Plan (Pure Business Logic)
  *
- * Transport-agnostic handler for content export operations.
+ * Transport-agnostic plan for content export operations.
  * Handles format conversion, HTML generation, and export preparation.
  * Platform-specific file operations (dialogs, fs) are injected.
  *
@@ -53,7 +53,7 @@ export interface ValidationResult {
     error?: string;
 }
 /**
- * ExportHandler - Pure business logic for export operations
+ * ExportPlan - Pure business logic for export operations
  *
  * Dependencies are injected via constructor to support both platforms:
  * - implodeWrapper: HTML export service with implode functionality
@@ -61,7 +61,7 @@ export interface ValidationResult {
  * - htmlTemplate: HTML template generation service
  * - messageRetriever: Function to retrieve messages from a topic
  */
-export declare class ExportHandler {
+export declare class ExportPlan {
     private implodeWrapper;
     private formatter;
     private htmlTemplate;
@@ -101,4 +101,4 @@ export declare class ExportHandler {
     private generateEmptyConversationHTML;
 }
 export {};
-//# sourceMappingURL=ExportHandler.d.ts.map
+//# sourceMappingURL=ExportPlan.d.ts.map
