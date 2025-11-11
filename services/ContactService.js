@@ -5,7 +5,7 @@
  * Provides contact list with LAMA-specific enhancements:
  * - AI contact detection
  * - Avatar color management
- * - Caching (5s TTL)
+ * - No caching (LeuteModel already caches)
  * - Deduplication
  */
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
@@ -70,30 +70,21 @@ async function getAvatarColor(personId) {
 export class ContactService {
     leuteModel;
     aiAssistantModel; // Optional - for AI detection
-    contactsCache = null;
-    contactsCacheTime = 0;
-    CONTACTS_CACHE_TTL = 5000; // 5 seconds
+    // No local cache - LeuteModel already caches
     constructor(leuteModel, aiAssistantModel) {
         this.leuteModel = leuteModel;
         this.aiAssistantModel = aiAssistantModel;
     }
     /**
-     * Invalidate contacts cache
+     * Invalidate contacts cache (deprecated - no-op)
      */
     invalidateContactsCache() {
-        this.contactsCache = null;
-        this.contactsCacheTime = 0;
+        // No-op - we don't cache locally
     }
     /**
      * Get contacts from LeuteModel with LAMA-specific enhancements
      */
     async getContacts() {
-        // Check cache first
-        const now = Date.now();
-        if (this.contactsCache && (now - this.contactsCacheTime) < this.CONTACTS_CACHE_TTL) {
-            console.log('[ContactService] Returning cached contacts');
-            return this.contactsCache;
-        }
         console.log('\n' + '='.repeat(60));
         console.log('[ContactService] 📋 GETTING CONTACTS - START');
         console.log('='.repeat(60));
@@ -225,9 +216,6 @@ export class ContactService {
         console.log(`[ContactService]   - AI contacts: ${contacts.filter(c => c.isAI).length}`);
         console.log(`[ContactService]   - Regular contacts: ${contacts.filter(c => !c.isAI && c.role !== 'owner').length}`);
         console.log('='.repeat(60) + '\n');
-        // Update cache
-        this.contactsCache = contacts;
-        this.contactsCacheTime = now;
         return contacts;
     }
     /**

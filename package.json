@@ -15,6 +15,10 @@
     "./recipes/*": "./recipes/*",
     "./types/*": "./types/*"
   },
+  "peerDependencies": {
+    "@refinio/one.core": "*",
+    "@refinio/one.models": "*"
+  },
   "author": "lama.one Team",
   "license": "MIT",
   "private": true,

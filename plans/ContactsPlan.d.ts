@@ -40,6 +40,10 @@ export declare class ContactsPlan {
     private nodeOneCore;
     constructor(nodeOneCore: any);
     /**
+     * Invalidate the contacts cache (deprecated - no-op)
+     */
+    invalidateCache(): void;
+    /**
      * Get all contacts
      */
     getContacts(): Promise<GetContactsResponse>;

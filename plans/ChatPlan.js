@@ -219,6 +219,21 @@ export class ChatPlan {
                         console.error('[ChatPlan] Failed to get sender name:', error);
                     }
                 }
+                const thinking = msg.data?.thinking || msg.thinking;
+                if (thinking) {
+                    console.log(`[ChatPlan] 🧠 Message ${msg.id?.substring(0, 8)} has thinking (${thinking.length} chars)`);
+                }
+                // Detect if sender is an AI using AIAssistantModel
+                let isAI = false;
+                if (sender && this.nodeOneCore.aiAssistantModel) {
+                    try {
+                        isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
+                    }
+                    catch (e) {
+                        // If detection fails, default to false
+                        isAI = false;
+                    }
+                }
                 return {
                     id: msg.id,
                     content: msg.data?.text || msg.text || '', // Check both data.text and text (matches Electron)
@@ -226,7 +241,9 @@ export class ChatPlan {
                     senderName,
                     timestamp: msg.creationTime ? new Date(msg.creationTime).getTime() : Date.now(),
                     attachments: msg.data?.attachments || [],
-                    creationTime: msg.creationTime
+                    creationTime: msg.creationTime,
+                    thinking, // Include thinking/reasoning trace (for DeepSeek R1, etc.)
+                    isAI // Flag to identify AI messages
                 };
             }));
             // Sort by timestamp ascending (oldest first in array)
@@ -273,12 +290,16 @@ export class ChatPlan {
             const type = request.type || 'direct';
             const participants = request.participants || [];
             const name = request.name || `Conversation ${Date.now()}`;
+            console.error(`[ChatPlan] 🔍 BEFORE createGroupTopic - participants.length: ${participants.length}`);
+            console.error(`[ChatPlan] 🔍 BEFORE createGroupTopic - participants:`, participants);
             // Generate deterministic topic ID for the conversation
             // Use Date.now() + random component to prevent burst collisions
             const randomComponent = Math.random().toString(36).substring(2, 8);
             const topicId = `group-${Date.now()}-${randomComponent}-${String(userId).substring(0, 8)}`;
             // Create topic using TopicGroupManager (creates group, grants access, creates owner's channel)
             const topic = await this.nodeOneCore.topicGroupManager.createGroupTopic(name, topicId, participants);
+            console.error(`[ChatPlan] 🔍 AFTER createGroupTopic - participants.length: ${participants.length}`);
+            console.error(`[ChatPlan] 🔍 AFTER createGroupTopic - participants:`, participants);
             // Configure channel for group conversations (one.leute pattern)
             // This ensures Person/Profile objects arriving via CHUM are automatically registered
             if (this.nodeOneCore.channelManager) {
@@ -296,15 +317,10 @@ export class ChatPlan {
                             if (modelId) {
                                 this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, modelId);
                                 console.error(`[ChatPlan] Detected AI participant ${participantId.substring(0, 8)} with model: ${modelId}`);
-                                // Trigger welcome message in background
-                                setImmediate(async () => {
-                                    try {
-                                        await this.nodeOneCore.aiAssistantModel.handleNewTopic(topicId);
-                                        console.error(`[ChatPlan] Welcome message generated for topic: ${topicId}`);
-                                    }
-                                    catch (error) {
-                                        console.error('[ChatPlan] Failed to generate welcome message:', error);
-                                    }
+                                // Trigger welcome message - don't await, but start it NOW (not via setImmediate)
+                                // This ensures the thinking event fires before IPC returns
+                                this.nodeOneCore.aiAssistantModel.handleNewTopic(topicId).catch((error) => {
+                                    console.error('[ChatPlan] Failed to generate welcome message:', error);
                                 });
                                 break; // Only register first AI participant
                             }
@@ -465,6 +481,22 @@ export class ChatPlan {
                     // If we can't fetch messages, just continue without preview
                     console.warn(`[ChatPlan] Could not fetch last message for topic ${topicId}:`, error);
                 }
+                // Get AI model info if this is an AI topic
+                let aiModelId;
+                let modelName;
+                let isAITopic = false;
+                // Check if topic has an AI model registered
+                if (this.nodeOneCore.aiAssistantModel?.topicManager) {
+                    aiModelId = this.nodeOneCore.aiAssistantModel.topicManager.getModelIdForTopic(topicId);
+                    if (aiModelId) {
+                        isAITopic = true;
+                        // Get model name from LLM manager
+                        if (this.nodeOneCore.llmManager) {
+                            const modelInfo = this.nodeOneCore.llmManager.getModel(aiModelId);
+                            modelName = modelInfo?.name || aiModelId;
+                        }
+                    }
+                }
                 return {
                     id: topicId,
                     name: name || topicId,
@@ -472,7 +504,10 @@ export class ChatPlan {
                     participants,
                     lastActivity: lastMessageTime,
                     lastMessage,
-                    unreadCount: 0
+                    unreadCount: 0,
+                    isAITopic,
+                    aiModelId,
+                    modelName
                 };
             }));
             // Sort by last activity

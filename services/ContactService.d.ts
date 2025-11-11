@@ -5,7 +5,7 @@
  * Provides contact list with LAMA-specific enhancements:
  * - AI contact detection
  * - Avatar color management
- * - Caching (5s TTL)
+ * - No caching (LeuteModel already caches)
  * - Deduplication
  */
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
@@ -32,12 +32,9 @@ export interface Contact {
 export declare class ContactService {
     private leuteModel;
     private aiAssistantModel;
-    private contactsCache;
-    private contactsCacheTime;
-    private readonly CONTACTS_CACHE_TTL;
     constructor(leuteModel: LeuteModel, aiAssistantModel?: any);
     /**
-     * Invalidate contacts cache
+     * Invalidate contacts cache (deprecated - no-op)
      */
     invalidateContactsCache(): void;
     /**

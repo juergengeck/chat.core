@@ -175,6 +175,22 @@ export async function handleReceivedProfile(
     }
 
     // Someone doesn't exist - this is a Profile from CHUM sync or other source
+    // Ensure Profile has a PersonName before storing
+    if (!profileData.personDescriptions || !Array.isArray(profileData.personDescriptions)) {
+        profileData.personDescriptions = [];
+    }
+
+    const hasPersonName = profileData.personDescriptions.some((desc: any) => desc.$type$ === 'PersonName');
+    if (!hasPersonName) {
+        // No PersonName found - create one from personId (will show truncated hash until better name available)
+        const displayName = `Contact ${String(personId).substring(0, 8)}`;
+        console.log('[ContactCreation] Profile missing PersonName - adding placeholder:', displayName);
+        profileData.personDescriptions.unshift({
+            $type$: 'PersonName',
+            name: displayName
+        });
+    }
+
     // Store to ensure vheads exist (CHUM sends object data but not version nodes)
     console.log('[ContactCreation] Creating Someone for Profile from CHUM/external source...');
     const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');

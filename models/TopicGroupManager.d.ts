@@ -55,6 +55,11 @@ export declare class TopicGroupManager {
      */
     createImportFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean>;
     /**
+     * Helper to create a properly formatted Group object
+     * @private
+     */
+    private createGroupObject;
+    /**
      * Check if a conversation has a group
      */
     hasConversationGroup(conversationId: string): boolean;
@@ -76,7 +81,7 @@ export declare class TopicGroupManager {
      * Add participants to a conversation group
      * @deprecated Use addParticipantsToTopic() instead
      */
-    addParticipantsToGroup(topicId: any, participantIds: any): Promise<any>;
+    addParticipantsToGroup(topicId: any, participants: any): Promise<any>;
     /**
      * Get default AI person ID
      */
@@ -104,18 +109,18 @@ export declare class TopicGroupManager {
      * Create a P2P topic following one.leute reference patterns exactly
      * @param {string} topicName - Display name for the topic
      * @param {string} topicId - Topic ID in format: personId1<->personId2
-     * @param {Array<string>} participantIds - Array of exactly 2 person IDs
+     * @param {Array<string>} participants - Array of exactly 2 person IDs
      */
-    createP2PTopic(topicName: any, topicId: any, participantIds: any): Promise<any>;
+    createP2PTopic(topicName: any, topicId: any, participants: any): Promise<any>;
     /**
      * Create a topic with the conversation group - compatible with one.leute architecture
      * In one.leute: ONE topic ID, MULTIPLE channels (one per participant)
      * @param {string} topicName - Display name for the topic
      * @param {string} topicId - Unique ID for the topic
-     * @param {Array<string>} participantIds - Array of person IDs (humans, AIs, etc) to include
+     * @param {Array<string>} participants - Array of person IDs (humans, AIs, etc) to include
      * @param {boolean} autoAddChumConnections - Whether to automatically add all CHUM connections (default: false)
      */
-    createGroupTopic(topicName: string, topicId: string, participantIds?: SHA256IdHash<Person>[], autoAddChumConnections?: boolean): Promise<unknown>;
+    createGroupTopic(topicName: string, topicId: string, participants?: SHA256IdHash<Person>[], autoAddChumConnections?: boolean): Promise<unknown>;
     /**
      * Add participants to existing topic's group
      */

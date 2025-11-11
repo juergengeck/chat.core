@@ -61,16 +61,26 @@ export class ContactsPlan {
   }
 
   /**
+   * Invalidate the contacts cache (deprecated - no-op)
+   */
+  invalidateCache(): void {
+    // No-op - we don't cache locally
+  }
+
+  /**
    * Get all contacts
    */
   async getContacts(): Promise<GetContactsResponse> {
     try {
+      console.log('[ContactsPlan] 📋 Getting contacts...');
       if (!this.nodeOneCore.leuteModel) {
+        console.warn('[ContactsPlan] ⚠️  Leute model not initialized');
         return { success: false, error: 'Leute model not initialized' };
       }
 
       // Get human contacts - these are Someone objects that need to be transformed
       const someoneObjects = await this.nodeOneCore.leuteModel.others();
+      console.log(`[ContactsPlan] Found ${someoneObjects.length} Someone objects`);
       const allContacts: Contact[] = [];
 
       // Track processed Person IDs to skip duplicates
@@ -101,54 +111,28 @@ export class ContactsPlan {
         // Check if this is an AI contact first (for fallback display name)
         let isAI = false;
         let modelId: string | undefined;
-        if (this.nodeOneCore.aiAssistantModel?.llmObjectManager) {
-          isAI = this.nodeOneCore.aiAssistantModel.llmObjectManager.isLLMPerson(personId);
+        if (this.nodeOneCore.aiAssistantModel) {
+          isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(personId);
+          console.log(`[ContactsPlan]   Person ${personId.substring(0, 8)} isAI: ${isAI}`);
 
           // If this is an AI, get the model ID
-          if (isAI && this.nodeOneCore.aiAssistantModel) {
+          if (isAI) {
             modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(personId);
+            console.log(`[ContactsPlan]   Model ID: ${modelId}`);
           }
+        } else {
+          console.log(`[ContactsPlan]   ⚠️  No aiAssistantModel available for AI detection`);
         }
 
-        // If no PersonName found, get name or email from Person object
+        // Final fallback for non-AI contacts or if PersonName is not available
         if (!displayName) {
-          const result = await getObjectByIdHash(personId);
-          const person = result?.obj;
-          if (person && person.$type$ === 'Person') {
-            // Try name first (AI contacts have this), then fall back to email
-            displayName = (person as any).name || (person as any).email;
-
-            // For AI contacts with email but no name, try to get model display name
-            if (!displayName && (person as any).email?.endsWith('@ai.local')) {
-              // Extract modelId from email (format: "model_id@ai.local")
-              const emailModelId = (person as any).email.replace('@ai.local', '').replace(/_/g, ':');
-              if (this.nodeOneCore.aiAssistantModel?.llmObjectManager) {
-                try {
-                  const llmObject = await this.nodeOneCore.aiAssistantModel.llmObjectManager.getByModelId(emailModelId);
-                  if (llmObject?.name) {
-                    displayName = llmObject.name;
-                  }
-                } catch (err) {
-                  // LLM object lookup failed, continue to fallback
-                }
-              }
-
-              // Still no name? Use the modelId itself (better than person ID)
-              if (!displayName) {
-                displayName = emailModelId;
-              }
-            }
-          }
-
-          // Final fallback for non-AI contacts or AI without email
-          if (!displayName) {
-            if (isAI && modelId) {
-              // Use model ID if we have it from the cache
-              displayName = modelId;
-            } else {
-              // Last resort: use truncated person ID (silent fallback)
-              displayName = `Contact ${String(personId).substring(0, 8)}`;
-            }
+          if (isAI && modelId) {
+            // Use model ID if we have it from the cache
+            displayName = modelId;
+          } else {
+            // Last resort: use truncated person ID
+            // This happens when Profile doesn't have PersonName yet (e.g., during initial CHUM sync)
+            displayName = `Contact ${String(personId).substring(0, 8)}`;
           }
         }
 
@@ -162,6 +146,8 @@ export class ContactsPlan {
           isConnected: isAI // AI is always "connected"
         });
       }
+
+      console.log(`[ContactsPlan] ✅ Returning ${allContacts.length} contacts (${allContacts.filter(c => c.isAI).length} AI)`);
 
       return {
         success: true,

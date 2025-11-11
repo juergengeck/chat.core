@@ -5,7 +5,7 @@
  * Provides contact list with LAMA-specific enhancements:
  * - AI contact detection
  * - Avatar color management
- * - Caching (5s TTL)
+ * - No caching (LeuteModel already caches)
  * - Deduplication
  */
 
@@ -101,9 +101,7 @@ async function getAvatarColor(personId: string): Promise<string> {
 export class ContactService {
   private leuteModel: LeuteModel;
   private aiAssistantModel: any; // Optional - for AI detection
-  private contactsCache: Contact[] | null = null;
-  private contactsCacheTime = 0;
-  private readonly CONTACTS_CACHE_TTL = 5000; // 5 seconds
+  // No local cache - LeuteModel already caches
 
   constructor(
     leuteModel: LeuteModel,
@@ -114,24 +112,16 @@ export class ContactService {
   }
 
   /**
-   * Invalidate contacts cache
+   * Invalidate contacts cache (deprecated - no-op)
    */
   invalidateContactsCache(): void {
-    this.contactsCache = null;
-    this.contactsCacheTime = 0;
+    // No-op - we don't cache locally
   }
 
   /**
    * Get contacts from LeuteModel with LAMA-specific enhancements
    */
   async getContacts(): Promise<Contact[]> {
-    // Check cache first
-    const now = Date.now();
-    if (this.contactsCache && (now - this.contactsCacheTime) < this.CONTACTS_CACHE_TTL) {
-      console.log('[ContactService] Returning cached contacts');
-      return this.contactsCache;
-    }
-
     console.log('\n' + '='.repeat(60));
     console.log('[ContactService] 📋 GETTING CONTACTS - START');
     console.log('='.repeat(60));
@@ -273,10 +263,6 @@ export class ContactService {
     console.log(`[ContactService]   - AI contacts: ${contacts.filter(c => c.isAI).length}`);
     console.log(`[ContactService]   - Regular contacts: ${contacts.filter(c => !c.isAI && c.role !== 'owner').length}`);
     console.log('='.repeat(60) + '\n');
-
-    // Update cache
-    this.contactsCache = contacts;
-    this.contactsCacheTime = now;
 
     return contacts;
   }

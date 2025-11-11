@@ -90,6 +90,17 @@ export class TopicGroupManager {
         };
     }
     /**
+     * Helper to create a properly formatted Group object
+     * @private
+     */
+    createGroupObject(groupName, participants, hashGroupHash) {
+        return {
+            $type$: 'Group',
+            name: groupName,
+            hashGroup: hashGroupHash
+        };
+    }
+    /**
      * Check if a conversation has a group
      */
     hasConversationGroup(conversationId) {
@@ -123,10 +134,10 @@ export class TopicGroupManager {
             const participants = await this.getDefaultParticipants(aiPersonId);
             // Create a Group object with these members
             const groupName = `conversation-${topicId}`;
-            // 1. Create HashGroup with members
+            // 1. Create HashGroup with person set (HashGroup recipe requires 'person' as Set)
             const hashGroup = {
                 $type$: 'HashGroup',
-                person: new Set(participants)
+                person: new Set(participants) // Set of SHA256IdHash<Person>
             };
             console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${participants.length} members`);
             const storedHashGroup = await this.storageDeps.storeUnversionedObject(hashGroup);
@@ -135,11 +146,7 @@ export class TopicGroupManager {
                 throw new Error(`[TopicGroupManager] storeUnversionedObject failed for HashGroup: ${JSON.stringify(storedHashGroup)}`);
             }
             // 2. Create Group referencing the HashGroup
-            const group = {
-                $type$: 'Group',
-                name: groupName,
-                hashGroup: storedHashGroup.hash
-            };
+            const group = this.createGroupObject(groupName, participants, storedHashGroup.hash);
             console.log(`[TopicGroupManager] 🔍 About to store Group:`, JSON.stringify(group, null, 2));
             // Store the group
             const storedGroup = await this.storageDeps.storeVersionedObject(group);
@@ -190,9 +197,9 @@ export class TopicGroupManager {
      * Add participants to a conversation group
      * @deprecated Use addParticipantsToTopic() instead
      */
-    async addParticipantsToGroup(topicId, participantIds) {
+    async addParticipantsToGroup(topicId, participants) {
         console.log(`[TopicGroupManager] addParticipantsToGroup() called - delegating to addParticipantsToTopic()`);
-        return this.addParticipantsToTopic(topicId, participantIds);
+        return this.addParticipantsToTopic(topicId, participants);
     }
     /**
      * Get default AI person ID
@@ -270,7 +277,9 @@ export class TopicGroupManager {
             }
             // 2. Load existing HashGroup to get current members
             const hashGroupResult = await this.storageDeps.getObject(existingGroup.hashGroup);
-            const currentMembers = Array.from(hashGroupResult.person || new Set());
+            // HashGroup has 'person' field (Set when created, may be array when deserialized)
+            const personData = hashGroupResult.person || [];
+            const currentMembers = Array.isArray(personData) ? personData : Array.from(personData);
             // Check if the person is already in the group
             if (currentMembers.includes(personId)) {
                 console.log(`[TopicGroupManager] ${String(personId).substring(0, 8)} is already in the group`);
@@ -334,19 +343,19 @@ export class TopicGroupManager {
      * Create a P2P topic following one.leute reference patterns exactly
      * @param {string} topicName - Display name for the topic
      * @param {string} topicId - Topic ID in format: personId1<->personId2
-     * @param {Array<string>} participantIds - Array of exactly 2 person IDs
+     * @param {Array<string>} participants - Array of exactly 2 person IDs
      */
-    async createP2PTopic(topicName, topicId, participantIds) {
+    async createP2PTopic(topicName, topicId, participants) {
         console.log(`[TopicGroupManager] Creating P2P topic: ${topicName} (${topicId})`);
-        console.log(`[TopicGroupManager] P2P participants:`, participantIds.map((p) => String(p).substring(0, 8)).join(', '));
-        if (participantIds.length !== 2) {
-            throw new Error(`P2P topic requires exactly 2 participants, got ${participantIds.length}`);
+        console.log(`[TopicGroupManager] P2P participants:`, participants.map((p) => String(p).substring(0, 8)).join(', '));
+        if (participants.length !== 2) {
+            throw new Error(`P2P topic requires exactly 2 participants, got ${participants.length}`);
         }
         if (!this.oneCore.topicModel) {
             throw new Error('TopicModel not initialized');
         }
         // Use createOneToOneTopic - this creates deterministic topic with proper access
-        const [from, to] = participantIds;
+        const [from, to] = participants;
         const topic = await this.oneCore.topicModel.createOneToOneTopic(from, to);
         console.log(`[TopicGroupManager] ✅ P2P topic created: ${topic.id}`);
         console.log(`[TopicGroupManager] ✅ Channel: ${topic.channel?.substring(0, 16)}...`);
@@ -361,12 +370,12 @@ export class TopicGroupManager {
      * In one.leute: ONE topic ID, MULTIPLE channels (one per participant)
      * @param {string} topicName - Display name for the topic
      * @param {string} topicId - Unique ID for the topic
-     * @param {Array<string>} participantIds - Array of person IDs (humans, AIs, etc) to include
+     * @param {Array<string>} participants - Array of person IDs (humans, AIs, etc) to include
      * @param {boolean} autoAddChumConnections - Whether to automatically add all CHUM connections (default: false)
      */
-    async createGroupTopic(topicName, topicId, participantIds = [], autoAddChumConnections = false) {
+    async createGroupTopic(topicName, topicId, participants = [], autoAddChumConnections = false) {
         console.log(`[TopicGroupManager] 🔍 DEBUG Creating topic: "${topicName}" with ID: "${topicId}"`);
-        console.log(`[TopicGroupManager] 🔍 DEBUG Initial participants: ${participantIds.length} persons`);
+        console.log(`[TopicGroupManager] 🔍 DEBUG Initial participants: ${participants.length} persons`);
         console.log(`[TopicGroupManager] 🔍 DEBUG topicId type: ${typeof topicId}, length: ${topicId?.length}`);
         // P2P conversations MUST use createOneToOneTopic directly - no groups
         const isP2P = topicId.includes('<->');
@@ -376,41 +385,40 @@ export class TopicGroupManager {
             // They should go directly through TopicModel.createOneToOneTopic
             throw new Error(`P2P conversation ${topicId} should use TopicModel.createOneToOneTopic, not createGroupTopic`);
         }
+        // CRITICAL: Create a copy to avoid mutating the caller's array
+        // JavaScript passes arrays by reference, so modifying the parameter would affect the original
+        const allParticipants = [...participants];
         // Always include the node owner
-        if (!participantIds.includes(this.oneCore.ownerId)) {
-            participantIds.unshift(this.oneCore.ownerId);
+        if (!allParticipants.includes(this.oneCore.ownerId)) {
+            allParticipants.unshift(this.oneCore.ownerId);
         }
         // Add CHUM connections for group chats
         if (autoAddChumConnections) {
             const activeChumConnections = this.oneCore.getActiveCHUMConnections();
             for (const chumPersonId of activeChumConnections) {
-                if (!participantIds.includes(chumPersonId)) {
-                    participantIds.push(chumPersonId);
+                if (!allParticipants.includes(chumPersonId)) {
+                    allParticipants.push(chumPersonId);
                     console.log(`[TopicGroupManager] Added active CHUM connection ${String(chumPersonId).substring(0, 8)}... to group`);
                 }
             }
         }
-        console.log(`[TopicGroupManager] Final participants: ${participantIds.length} persons`);
-        console.log(`[TopicGroupManager] Participant IDs:`, participantIds.map(p => String(p).substring(0, 8)).join(', '));
+        console.log(`[TopicGroupManager] Final participants: ${allParticipants.length} persons`);
+        console.log(`[TopicGroupManager] Participant IDs:`, allParticipants.map(p => String(p).substring(0, 8)).join(', '));
         // Create the conversation group with all participants
         const groupName = `conversation-${topicId}`;
-        // 1. Create HashGroup with members
+        // 1. Create HashGroup with person set (HashGroup recipe requires 'person' as Set)
         const hashGroup = {
             $type$: 'HashGroup',
-            person: new Set(participantIds) // All participants including node owner, AIs, other contacts
+            person: new Set(allParticipants) // Set of Person IDs
         };
-        console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${participantIds.length} members`);
+        console.log(`[TopicGroupManager] 🔍 About to store HashGroup with ${allParticipants.length} members`);
         const storedHashGroup = await this.storageDeps.storeUnversionedObject(hashGroup);
         console.log(`[TopicGroupManager] 🔍 storeUnversionedObject returned:`, JSON.stringify(storedHashGroup, null, 2));
         if (!storedHashGroup || !storedHashGroup.hash) {
             throw new Error(`[TopicGroupManager] storeUnversionedObject failed for HashGroup: ${JSON.stringify(storedHashGroup)}`);
         }
         // 2. Create Group referencing the HashGroup
-        const group = {
-            $type$: 'Group',
-            name: groupName,
-            hashGroup: storedHashGroup.hash
-        };
+        const group = this.createGroupObject(groupName, allParticipants, storedHashGroup.hash);
         console.log(`[TopicGroupManager] 🔍 About to store Group:`, JSON.stringify(group, null, 2));
         // Store the group
         const storedGroup = await this.storageDeps.storeVersionedObject(group);
@@ -419,8 +427,8 @@ export class TopicGroupManager {
         }
         const groupIdHash = storedGroup.idHash;
         const hashGroupHash = storedHashGroup.hash;
-        console.log(`[TopicGroupManager] Created group ${groupName} with ${participantIds.length} persons, hashGroup: ${String(hashGroupHash).substring(0, 8)}`);
-        console.log(`[TopicGroupManager] Persons:`, participantIds.map(p => String(p).substring(0, 8)).join(', '));
+        console.log(`[TopicGroupManager] Created group ${groupName} with ${allParticipants.length} persons, hashGroup: ${String(hashGroupHash).substring(0, 8)}`);
+        console.log(`[TopicGroupManager] Persons:`, allParticipants.map(p => String(p).substring(0, 8)).join(', '));
         // Cache the group and add HashGroup to allowed list (for CHUM sync)
         this.conversationGroups.set(topicId, groupIdHash);
         this.allowedGroups.add(hashGroupHash);
@@ -434,36 +442,36 @@ export class TopicGroupManager {
         await this.storageDeps.createAccess([
             {
                 id: storedHashGroup.hash,
-                person: participantIds,
+                person: participants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 id: groupIdHash,
-                person: participantIds,
+                person: participants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 object: certResult.certificate.hash,
-                person: participantIds,
+                person: participants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 object: certResult.signature.hash,
-                person: participantIds,
+                person: participants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 object: certResult.license.hash,
-                person: participantIds,
+                person: participants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             }
         ]);
-        console.log(`[TopicGroupManager] ✅ Access granted to ${participantIds.length} participants`);
+        console.log(`[TopicGroupManager] ✅ Access granted to ${participants.length} participants`);
         // Create the topic using TopicModel
         if (!this.oneCore.topicModel) {
             throw new Error('TopicModel not initialized');
@@ -482,10 +490,10 @@ export class TopicGroupManager {
         // Share the topic with the group
         await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
         console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} access to topic ${topicId}`);
-        // Create channels for ALL participants in participantIds
-        // participantIds contains all LOCAL participants (owner + AI contacts, etc.)
+        // Create channels for ALL participants in participants
+        // participants contains all LOCAL participants (owner + AI contacts, etc.)
         // Remote participants will create their own channels when they receive the Group via CHUM
-        for (const participantId of participantIds) {
+        for (const participantId of participants) {
             if (participantId && this.oneCore.channelManager) {
                 try {
                     // createChannel is idempotent - if channel exists, it's a no-op
@@ -511,13 +519,13 @@ export class TopicGroupManager {
             }
         }
         console.log(`[TopicGroupManager] Topic ${topicId} created with group ${String(groupIdHash).substring(0, 8)}`);
-        console.log(`[TopicGroupManager] Created channels for all ${participantIds.length} LOCAL participants`);
+        console.log(`[TopicGroupManager] Created channels for all ${participants.length} LOCAL participants`);
         // IMPORTANT: Architecture:
         // - ONE topic ID for the conversation
         // - MULTIPLE channels (one per participant) with the SAME topic ID
         // - Each participant writes to their OWN channel ONLY
         // - All participants can READ from all channels (via group access)
-        // - participantIds contains LOCAL participants (owner + AI contacts)
+        // - participants contains LOCAL participants (owner + AI contacts)
         // - Remote humans create their OWN channels when receiving Group via CHUM
         console.log(`[TopicGroupManager] All local participants have channels`);
         return topic;
@@ -556,18 +564,14 @@ export class TopicGroupManager {
             const allParticipants = [...currentParticipants, ...participants];
             console.log(`[TopicGroupManager] Creating NEW group with ${allParticipants.length} participants`);
             const groupName = `conversation-${topicId}`;
-            // 1. Create HashGroup with members
+            // 1. Create HashGroup with person (HashGroup recipe requires 'person' as Set)
             const hashGroup = {
                 $type$: 'HashGroup',
                 person: new Set(allParticipants)
             };
             const storedHashGroup = await this.storageDeps.storeUnversionedObject(hashGroup);
             // 2. Create Group referencing the HashGroup
-            const group = {
-                $type$: 'Group',
-                name: groupName,
-                hashGroup: storedHashGroup.hash
-            };
+            const group = this.createGroupObject(groupName, allParticipants, storedHashGroup.hash);
             const storedGroup = await this.storageDeps.storeVersionedObject(group);
             groupIdHash = storedGroup.idHash;
             console.log(`[TopicGroupManager] ✅ Stored NEW group with ID hash: ${String(groupIdHash).substring(0, 8)}`);
@@ -591,7 +595,9 @@ export class TopicGroupManager {
             }
             // 2. Load existing HashGroup to get current members
             const hashGroupResult = await this.storageDeps.getObject(existingGroup.hashGroup);
-            const currentMembers = Array.from(hashGroupResult.person || new Set());
+            // HashGroup has 'person' field (Set when created, may be array when deserialized)
+            const personData = hashGroupResult.person || [];
+            const currentMembers = Array.isArray(personData) ? personData : Array.from(personData);
             console.log(`[TopicGroupManager] Retrieved existing group with ${currentMembers.length} participants`);
             console.log(`[TopicGroupManager] Existing participants:`, currentMembers.map((p) => String(p).substring(0, 8)));
             // Filter out participants that are already in the group
@@ -706,8 +712,12 @@ export class TopicGroupManager {
             throw new Error(`Group ${String(groupIdHash).substring(0, 8)} not found in storage`);
         }
         // Load the HashGroup to get the members
+        // NEW one.core structure: Group.hashGroup → HashGroup.person (Set)
         const hashGroupResult = await this.storageDeps.getObject(group.hashGroup);
-        const members = Array.from(hashGroupResult.person || []);
+        const hashGroup = hashGroupResult;
+        // HashGroup.person is a Set<SHA256IdHash<Person>>
+        const personSet = hashGroup.person || new Set();
+        const members = Array.from(personSet);
         console.log(`[TopicGroupManager] Retrieved group with ${members.length} participants`);
         console.log(`[TopicGroupManager] Participants:`, members.map((p) => String(p).substring(0, 8)));
         if (!members || members.length === 0) {
