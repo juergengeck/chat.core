@@ -15,15 +15,50 @@ import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
  * - nodeOneCore: Platform-specific ONE.core instance
  */
 export class ContactsPlan {
+    static get name() { return 'Contacts'; }
+    static get description() { return 'Manages contacts, groups, and trust relationships'; }
+    static get version() { return '1.0.0'; }
+    // Stable Plan ID for Story/Assembly tracking
+    static get planId() {
+        // TODO: Generate proper Plan ID hash
+        return 'plan-contacts-core-v1';
+    }
     nodeOneCore;
-    constructor(nodeOneCore) {
+    storyFactory;
+    constructor(nodeOneCore, storyFactory) {
         this.nodeOneCore = nodeOneCore;
+        this.storyFactory = storyFactory;
+    }
+    /**
+     * Set StoryFactory after initialization (for gradual adoption)
+     */
+    setStoryFactory(factory) {
+        this.storyFactory = factory;
+    }
+    /**
+     * Get current instance version hash for Story/Assembly tracking
+     */
+    getCurrentInstanceVersion() {
+        // Try to get from nodeOneCore, fallback to timestamp if not available
+        return this.nodeOneCore.instanceVersion || `instance-${Date.now()}`;
     }
     /**
      * Invalidate the contacts cache (deprecated - no-op)
      */
     invalidateCache() {
         // No-op - we don't cache locally
+    }
+    /**
+     * Helper to run an async operation with timeout
+     */
+    async withTimeout(promise, timeoutMs, defaultValue, description) {
+        return Promise.race([
+            promise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms: ${description}`)), timeoutMs))
+        ]).catch(error => {
+            console.warn(`[ContactsPlan] ${description} failed or timed out:`, error.message);
+            return defaultValue;
+        });
     }
     /**
      * Get all contacts
@@ -43,59 +78,69 @@ export class ContactsPlan {
             const processedPersonIds = new Set();
             // Transform Someone objects to plain serializable objects
             for (const someone of someoneObjects) {
-                const personId = await someone.mainIdentity();
-                if (!personId)
-                    continue;
-                // Skip if we've already processed this Person (duplicate Someone object)
-                if (processedPersonIds.has(personId)) {
-                    continue;
-                }
-                processedPersonIds.add(personId);
-                // Get profile to extract display name from PersonName
-                const profile = await someone.mainProfile();
-                let displayName = '';
-                if (profile?.personDescriptions && Array.isArray(profile.personDescriptions)) {
-                    const nameDesc = profile.personDescriptions.find((d) => d.$type$ === 'PersonName');
-                    if (nameDesc && 'name' in nameDesc) {
-                        displayName = nameDesc.name;
+                try {
+                    // Timeout protection: If a contact is corrupt/hanging, skip it after 2 seconds
+                    const personId = await this.withTimeout(someone.mainIdentity(), 2000, null, 'mainIdentity()');
+                    if (!personId) {
+                        console.warn('[ContactsPlan] Skipping contact - mainIdentity() failed or timed out');
+                        continue;
                     }
-                }
-                // Check if this is an AI contact first (for fallback display name)
-                let isAI = false;
-                let modelId;
-                if (this.nodeOneCore.aiAssistantModel) {
-                    isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(personId);
-                    console.log(`[ContactsPlan]   Person ${personId.substring(0, 8)} isAI: ${isAI}`);
-                    // If this is an AI, get the model ID
-                    if (isAI) {
-                        modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(personId);
-                        console.log(`[ContactsPlan]   Model ID: ${modelId}`);
+                    // Skip if we've already processed this Person (duplicate Someone object)
+                    if (processedPersonIds.has(personId)) {
+                        continue;
                     }
-                }
-                else {
-                    console.log(`[ContactsPlan]   ⚠️  No aiAssistantModel available for AI detection`);
-                }
-                // Final fallback for non-AI contacts or if PersonName is not available
-                if (!displayName) {
-                    if (isAI && modelId) {
-                        // Use model ID if we have it from the cache
-                        displayName = modelId;
+                    processedPersonIds.add(personId);
+                    // Get profile to extract display name from PersonName (with timeout)
+                    const profile = await this.withTimeout(someone.mainProfile(), 2000, null, `mainProfile() for ${personId.substring(0, 8)}`);
+                    let displayName = '';
+                    if (profile?.personDescriptions && Array.isArray(profile.personDescriptions)) {
+                        const nameDesc = profile.personDescriptions.find((d) => d.$type$ === 'PersonName');
+                        if (nameDesc && 'name' in nameDesc) {
+                            displayName = nameDesc.name;
+                        }
+                    }
+                    // Check if this is an AI contact first (for fallback display name)
+                    let isAI = false;
+                    let modelId;
+                    if (this.nodeOneCore.aiAssistantModel) {
+                        isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(personId);
+                        console.log(`[ContactsPlan]   Person ${personId.substring(0, 8)} isAI: ${isAI}`);
+                        // If this is an AI, get the model ID
+                        if (isAI) {
+                            modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(personId);
+                            console.log(`[ContactsPlan]   Model ID: ${modelId}`);
+                        }
                     }
                     else {
-                        // Last resort: use truncated person ID
-                        // This happens when Profile doesn't have PersonName yet (e.g., during initial CHUM sync)
-                        displayName = `Contact ${String(personId).substring(0, 8)}`;
+                        console.log(`[ContactsPlan]   ⚠️  No aiAssistantModel available for AI detection`);
                     }
+                    // Final fallback for non-AI contacts or if PersonName is not available
+                    if (!displayName) {
+                        if (isAI && modelId) {
+                            // Use model ID if we have it from the cache
+                            displayName = modelId;
+                        }
+                        else {
+                            // Last resort: use truncated person ID
+                            // This happens when Profile doesn't have PersonName yet (e.g., during initial CHUM sync)
+                            displayName = `Contact ${String(personId).substring(0, 8)}`;
+                        }
+                    }
+                    allContacts.push({
+                        id: personId,
+                        personId: personId,
+                        name: displayName,
+                        isAI: isAI,
+                        modelId: modelId,
+                        canMessage: true,
+                        isConnected: isAI // AI is always "connected"
+                    });
                 }
-                allContacts.push({
-                    id: personId,
-                    personId: personId,
-                    name: displayName,
-                    isAI: isAI,
-                    modelId: modelId,
-                    canMessage: true,
-                    isConnected: isAI // AI is always "connected"
-                });
+                catch (contactError) {
+                    // Skip this contact if processing fails - don't let one bad contact break the entire list
+                    console.error('[ContactsPlan] Failed to process contact, skipping:', contactError);
+                    continue;
+                }
             }
             console.log(`[ContactsPlan] ✅ Returning ${allContacts.length} contacts (${allContacts.filter(c => c.isAI).length} AI)`);
             return {
@@ -112,34 +157,48 @@ export class ContactsPlan {
         }
     }
     /**
-     * Get all contacts with trust information
+     * Get all contacts with trust information using trust.core
+     * Platform-agnostic: Uses TrustModel only, no transport dependencies
      */
     async getContactsWithTrust() {
         try {
             if (!this.nodeOneCore.leuteModel) {
                 return { success: false, error: 'Leute model not initialized' };
             }
-            const contacts = await this.nodeOneCore.leuteModel.others();
-            // Enhance with trust information
-            const contactsWithTrust = await Promise.all(contacts.map(async (contact) => {
-                // Get trust level from trust manager
-                const trustLevel = await this.nodeOneCore.quicTransport?.trustManager?.getContactTrustLevel(contact.personId) || 'unknown';
-                // Check if connected via QUIC
-                const isConnected = this.nodeOneCore.quicTransport?.peers?.has(contact.personId) || false;
-                // Check communication permissions
-                const canMessage = await this.nodeOneCore.quicTransport?.trustManager?.canCommunicateWith(contact.personId, 'message') || false;
-                const canSync = await this.nodeOneCore.quicTransport?.trustManager?.canCommunicateWith(contact.personId, 'sync') || false;
+            // Get basic contacts first
+            const basicResult = await this.getContacts();
+            if (!basicResult.success || !basicResult.contacts) {
+                return { success: false, error: basicResult.error || 'Failed to get contacts' };
+            }
+            // Enhance with trust information using trust.core (platform-agnostic)
+            const contactsWithTrust = await Promise.all(basicResult.contacts.map(async (contact) => {
+                let trustLevel = 'unknown';
+                let canMessage = true; // Default permissive
+                let canSync = false;
+                // Get trust info from trust.core TrustModel (platform-agnostic)
+                if (this.nodeOneCore.trustModel) {
+                    try {
+                        // Get trust status from TrustRelationship objects
+                        const trustStatus = await this.nodeOneCore.trustModel.getTrustStatus(contact.personId);
+                        if (trustStatus) {
+                            trustLevel = trustStatus; // 'trusted', 'untrusted', 'pending', 'revoked'
+                            // Evaluate trust to get communication permissions
+                            const evaluation = await this.nodeOneCore.trustModel.evaluateTrust(contact.personId, 'communication');
+                            canMessage = evaluation.level > 0.3; // Threshold for messaging
+                            canSync = evaluation.level > 0.7; // Higher threshold for data sync
+                        }
+                    }
+                    catch (err) {
+                        console.warn(`[ContactsPlan] Could not get trust info for ${contact.name}:`, err);
+                        // Keep defaults if trust unavailable
+                    }
+                }
                 return {
                     ...contact,
-                    id: contact.personId,
-                    name: contact.name || 'Unknown',
-                    isAI: false, // TODO: Check if AI
-                    canMessage,
-                    isConnected,
                     trustLevel,
                     canSync,
-                    discoverySource: 'quic-vc-discovery',
-                    discoveredAt: Date.now() - Math.random() * 86400000 // TODO: Get actual timestamp
+                    discoverySource: 'leute',
+                    discoveredAt: Date.now()
                 };
             }));
             return { success: true, contacts: contactsWithTrust };
@@ -249,11 +308,58 @@ export class ContactsPlan {
     }
     /**
      * Add a new contact
+     * Creates Person, Profile, and Someone objects
+     *
+     * ASSEMBLY TRIGGER: Case #5 - Store Someone/Profile (Identity Domain)
      */
     async addContact(personInfo) {
+        const userId = this.nodeOneCore.ownerId || this.nodeOneCore.leuteModel?.myMainIdentity();
+        // Wrap operation with Story + Assembly recording
+        if (this.storyFactory) {
+            try {
+                const result = await this.storyFactory.recordExecution({
+                    title: 'Add contact',
+                    description: `Creating contact: ${personInfo.name} (${personInfo.email})`,
+                    planId: ContactsPlan.planId,
+                    owner: userId || 'unknown',
+                    domain: 'identity',
+                    instanceVersion: this.getCurrentInstanceVersion(),
+                    // TRIGGER ASSEMBLY CREATION (case #5: Store Someone/Profile)
+                    supply: {
+                        domain: 'identity',
+                        keywords: ['profile', 'contact', 'someone'],
+                        ownerId: userId || 'unknown',
+                        subjects: []
+                    },
+                    demand: {
+                        domain: 'identity',
+                        keywords: ['contact-management', 'identity-storage'],
+                        trustLevel: 'me'
+                    },
+                    matchScore: 1.0
+                }, async () => {
+                    return await this.addContactInternal(personInfo);
+                });
+                return result.result;
+            }
+            catch (error) {
+                console.error('[ContactsPlan] Error adding contact:', error);
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+        // Fallback if no StoryFactory (gradual adoption)
+        return await this.addContactInternal(personInfo);
+    }
+    /**
+     * Internal implementation of addContact (wrapped by Story+Assembly recording)
+     */
+    async addContactInternal(personInfo) {
         try {
             if (!this.nodeOneCore.leuteModel) {
-                return { success: false, error: 'Leute model not initialized' };
+                throw new Error('Leute model not initialized');
             }
             // Create Person object with proper type
             const personData = {
@@ -305,11 +411,7 @@ export class ContactsPlan {
             };
         }
         catch (error) {
-            console.error('[ContactsPlan] Failed to add contact:', error);
-            return {
-                success: false,
-                error: error.message
-            };
+            throw error;
         }
     }
     /**
@@ -383,8 +485,54 @@ export class ContactsPlan {
     }
     /**
      * Create a new group using core Group object
+     *
+     * ASSEMBLY TRIGGER: Case #5 - Create a group (Identity Domain)
      */
     async createGroup(name, memberIds) {
+        const userId = this.nodeOneCore.ownerId || this.nodeOneCore.leuteModel?.myMainIdentity();
+        // Wrap operation with Story + Assembly recording
+        if (this.storyFactory) {
+            try {
+                const result = await this.storyFactory.recordExecution({
+                    title: 'Create group',
+                    description: `Creating group: ${name} with ${memberIds?.length || 0} members`,
+                    planId: ContactsPlan.planId,
+                    owner: userId || 'unknown',
+                    domain: 'identity',
+                    instanceVersion: this.getCurrentInstanceVersion(),
+                    // TRIGGER ASSEMBLY CREATION (case #5: Create group)
+                    supply: {
+                        domain: 'identity',
+                        keywords: ['group', 'membership', 'collaboration'],
+                        ownerId: userId || 'unknown',
+                        subjects: []
+                    },
+                    demand: {
+                        domain: 'identity',
+                        keywords: ['group-creation', 'team-management'],
+                        trustLevel: 'group'
+                    },
+                    matchScore: 1.0
+                }, async () => {
+                    return await this.createGroupInternal(name, memberIds);
+                });
+                return result.result;
+            }
+            catch (error) {
+                console.error('[ContactsPlan] Error creating group:', error);
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+        // Fallback if no StoryFactory (gradual adoption)
+        return await this.createGroupInternal(name, memberIds);
+    }
+    /**
+     * Internal implementation of createGroup (wrapped by Story+Assembly recording)
+     */
+    async createGroupInternal(name, memberIds) {
         try {
             // Create core Group object directly
             // Create HashGroup with members first (HashGroup.person is a Set in new one.core)
@@ -412,11 +560,7 @@ export class ContactsPlan {
             };
         }
         catch (error) {
-            console.error('[ContactsPlan] Failed to create group:', error);
-            return {
-                success: false,
-                error: error.message
-            };
+            throw error;
         }
     }
     /**

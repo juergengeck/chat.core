@@ -5,6 +5,8 @@
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api architecture.
  */
+import { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { StoryFactory } from '@refinio/refinio.api/dist/plan-system-index.js';
 export interface Contact {
     id: string;
     personId: string;
@@ -37,18 +39,36 @@ export interface GetContactsWithTrustResponse {
  * - nodeOneCore: Platform-specific ONE.core instance
  */
 export declare class ContactsPlan {
+    static get name(): string;
+    static get description(): string;
+    static get version(): string;
+    static get planId(): SHA256IdHash<any>;
     private nodeOneCore;
-    constructor(nodeOneCore: any);
+    private storyFactory?;
+    constructor(nodeOneCore: any, storyFactory?: StoryFactory);
+    /**
+     * Set StoryFactory after initialization (for gradual adoption)
+     */
+    setStoryFactory(factory: StoryFactory): void;
+    /**
+     * Get current instance version hash for Story/Assembly tracking
+     */
+    private getCurrentInstanceVersion;
     /**
      * Invalidate the contacts cache (deprecated - no-op)
      */
     invalidateCache(): void;
     /**
+     * Helper to run an async operation with timeout
+     */
+    private withTimeout;
+    /**
      * Get all contacts
      */
     getContacts(): Promise<GetContactsResponse>;
     /**
-     * Get all contacts with trust information
+     * Get all contacts with trust information using trust.core
+     * Platform-agnostic: Uses TrustModel only, no transport dependencies
      */
     getContactsWithTrust(): Promise<GetContactsWithTrustResponse>;
     /**
@@ -93,6 +113,9 @@ export declare class ContactsPlan {
     }>;
     /**
      * Add a new contact
+     * Creates Person, Profile, and Someone objects
+     *
+     * ASSEMBLY TRIGGER: Case #5 - Store Someone/Profile (Identity Domain)
      */
     addContact(personInfo: {
         name: string;
@@ -102,6 +125,10 @@ export declare class ContactsPlan {
         contact?: any;
         error?: string;
     }>;
+    /**
+     * Internal implementation of addContact (wrapped by Story+Assembly recording)
+     */
+    private addContactInternal;
     /**
      * Remove a contact
      */
@@ -126,12 +153,18 @@ export declare class ContactsPlan {
     }>;
     /**
      * Create a new group using core Group object
+     *
+     * ASSEMBLY TRIGGER: Case #5 - Create a group (Identity Domain)
      */
     createGroup(name: string, memberIds?: string[]): Promise<{
         success: boolean;
         group?: any;
         error?: string;
     }>;
+    /**
+     * Internal implementation of createGroup (wrapped by Story+Assembly recording)
+     */
+    private createGroupInternal;
     /**
      * Add contacts to a group (core Group pattern)
      */

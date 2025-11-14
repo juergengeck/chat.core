@@ -14,7 +14,7 @@ import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
  * @param topicModel - The TopicModel instance
  * @param localPersonId - Local person ID
  * @param remotePersonId - Remote person ID
- * @returns The created topic room
+ * @returns Object with { topicRoom, wasCreated } where wasCreated is true if newly created
  */
 export async function createP2PTopic(topicModel, localPersonId, remotePersonId) {
     // Generate P2P topic ID (lexicographically sorted for consistency)
@@ -29,7 +29,7 @@ export async function createP2PTopic(topicModel, localPersonId, remotePersonId) 
         const existingTopicRoom = await topicModel.enterTopicRoom(topicId);
         if (existingTopicRoom) {
             console.log('[P2PTopicService] Topic already exists:', topicId);
-            return existingTopicRoom;
+            return { topicRoom: existingTopicRoom, wasCreated: false };
         }
     }
     catch (error) {
@@ -47,7 +47,7 @@ export async function createP2PTopic(topicModel, localPersonId, remotePersonId) 
         // Enter the topic room to verify it's working
         const topicRoom = await topicModel.enterTopicRoom(topicId);
         console.log('[P2PTopicService] ✅ Successfully entered topic room');
-        return topicRoom;
+        return { topicRoom, wasCreated: true };
     }
     catch (error) {
         console.error('[P2PTopicService] Failed to create P2P topic:', error);
@@ -112,27 +112,33 @@ export async function autoCreateP2PTopicAfterPairing(params) {
     await new Promise(resolve => setTimeout(resolve, 3000));
     try {
         // Create the P2P topic
-        const topicRoom = await createP2PTopic(topicModel, localPersonId, remotePersonId);
+        const { topicRoom, wasCreated } = await createP2PTopic(topicModel, localPersonId, remotePersonId);
         // Generate the P2P channel ID
         const channelId = localPersonId < remotePersonId
             ? `${localPersonId}<->${remotePersonId}`
             : `${remotePersonId}<->${localPersonId}`;
-        // Ensure the channel exists in ChannelManager
-        await channelManager.createChannel(channelId, null); // null owner for P2P shared channel
-        // Grant access rights to both participants (person-based, not group-based)
-        await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
-        console.log('[P2PTopicService] ✅ P2P topic and channel ready for messaging');
-        // If we initiated the pairing, optionally send a welcome message
-        if (sendWelcomeMessage) {
-            try {
-                console.log('[P2PTopicService] Sending welcome message...');
-                // Use sendMessage with null channelOwner for P2P (shared channel)
-                await topicRoom.sendMessage('👋 Hello! Connection established.', undefined, null);
-                console.log('[P2PTopicService] ✅ Welcome message sent');
+        // Only setup channel/access if topic was newly created
+        if (wasCreated) {
+            // Ensure the channel exists in ChannelManager
+            await channelManager.createChannel(channelId, null); // null owner for P2P shared channel
+            // Grant access rights to both participants (person-based, not group-based)
+            await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
+            console.log('[P2PTopicService] ✅ P2P topic and channel ready for messaging');
+            // If we initiated the pairing, send a welcome message
+            if (sendWelcomeMessage) {
+                try {
+                    console.log('[P2PTopicService] Sending welcome message...');
+                    // Use sendMessage with null channelOwner for P2P (shared channel)
+                    await topicRoom.sendMessage('👋 Hello! Connection established.', undefined, null);
+                    console.log('[P2PTopicService] ✅ Welcome message sent');
+                }
+                catch (msgError) {
+                    console.log('[P2PTopicService] Could not send welcome message:', msgError.message);
+                }
             }
-            catch (msgError) {
-                console.log('[P2PTopicService] Could not send welcome message:', msgError.message);
-            }
+        }
+        else {
+            console.log('[P2PTopicService] ✅ Using existing P2P topic (no setup needed)');
         }
         return topicRoom;
     }
@@ -199,12 +205,15 @@ export async function ensureP2PTopicForIncomingMessage(params) {
         // Topic doesn't exist, create it
         console.log('[P2PTopicService] Topic does not exist, creating for incoming message...');
         try {
-            const topicRoom = await createP2PTopic(topicModel, localPersonId, remotePersonId);
-            // Ensure channel exists
-            await channelManager.createChannel(channelId, null);
-            // Grant access rights to both participants
-            await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
-            console.log('[P2PTopicService] ✅ Created P2P topic for incoming message');
+            const { topicRoom, wasCreated } = await createP2PTopic(topicModel, localPersonId, remotePersonId);
+            // Only setup channel/access if topic was newly created
+            if (wasCreated) {
+                // Ensure channel exists
+                await channelManager.createChannel(channelId, null);
+                // Grant access rights to both participants
+                await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
+                console.log('[P2PTopicService] ✅ Created P2P topic for incoming message');
+            }
             return topicRoom;
         }
         catch (createError) {

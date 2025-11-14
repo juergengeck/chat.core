@@ -17,7 +17,8 @@
   },
   "peerDependencies": {
     "@refinio/one.core": "*",
-    "@refinio/one.models": "*"
+    "@refinio/one.models": "*",
+    "@refinio/refinio-api": "*"
   },
   "author": "lama.one Team",
   "license": "MIT",

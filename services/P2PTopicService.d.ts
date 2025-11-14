@@ -10,9 +10,12 @@
  * @param topicModel - The TopicModel instance
  * @param localPersonId - Local person ID
  * @param remotePersonId - Remote person ID
- * @returns The created topic room
+ * @returns Object with { topicRoom, wasCreated } where wasCreated is true if newly created
  */
-export declare function createP2PTopic(topicModel: any, localPersonId: any, remotePersonId: any): Promise<any>;
+export declare function createP2PTopic(topicModel: any, localPersonId: any, remotePersonId: any): Promise<{
+    topicRoom: any;
+    wasCreated: boolean;
+}>;
 /**
  * Automatically create P2P topic after pairing success
  *

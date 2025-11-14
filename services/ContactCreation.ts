@@ -8,6 +8,7 @@ import SomeoneModel from '@refinio/one.models/lib/models/Leute/SomeoneModel.js';
 import LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
 import { ensureIdHash, type SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 
 /**
@@ -28,31 +29,40 @@ export async function createProfileAndSomeoneForPerson(
     console.log(`[ContactCreation] 📝 Creating new contact for Person ${personId?.substring(0, 8)}...`);
 
     try {
-        // 1. Create Profile using ProfileModel API
+        // 1. Store PersonName and descriptors FIRST (must be stored before referencing)
+        const personDescriptionHashes: any[] = [];
+
+        if (profileOptions.displayName) {
+            console.log(`[ContactCreation] Storing PersonName: ${profileOptions.displayName}`);
+            const personNameHash = await storeUnversionedObject({
+                $type$: 'PersonName',
+                name: profileOptions.displayName
+            });
+            personDescriptionHashes.push(personNameHash);
+        }
+
+        // Store any additional descriptors
+        if (profileOptions.descriptors && Array.isArray(profileOptions.descriptors)) {
+            for (const descriptor of profileOptions.descriptors) {
+                // Skip descriptors with undefined $type$ (invalid objects)
+                if (!descriptor || !descriptor.$type$ || descriptor.$type$ === 'undefined') {
+                    console.warn('[ContactCreation] Skipping invalid descriptor:', descriptor);
+                    continue;
+                }
+                const descriptorHash = await storeUnversionedObject(descriptor);
+                personDescriptionHashes.push(descriptorHash);
+            }
+        }
+
+        // 2. Create Profile using ProfileModel API with stored hashes
         console.log('[ContactCreation]   ├─ Creating Profile object...');
         const profile = await ProfileModel.constructWithNewProfile(
             ensureIdHash(personId),
             await leuteModel.myMainIdentity(),
             'default',
             [], // communicationEndpoints
-            []  // personDescriptions - will add after creation
+            personDescriptionHashes  // Hash references to stored PersonDescription objects
         );
-
-        // Add display name if provided
-        if (profileOptions.displayName) {
-            console.log(`[ContactCreation] Adding display name: ${profileOptions.displayName}`);
-            profile.personDescriptions.push({
-                $type$: 'PersonName',
-                name: profileOptions.displayName
-            });
-        }
-
-        // Add descriptors if provided
-        if (profileOptions.descriptors && Array.isArray(profileOptions.descriptors)) {
-            profileOptions.descriptors.forEach((descriptor: any) => {
-                profile.personDescriptions.push(descriptor);
-            });
-        }
 
         await profile.saveAndLoad();
         console.log(`[ContactCreation]   ├─ Profile saved: ${profile.idHash.toString().substring(0, 8)}`);
@@ -182,13 +192,14 @@ export async function handleReceivedProfile(
 
     const hasPersonName = profileData.personDescriptions.some((desc: any) => desc.$type$ === 'PersonName');
     if (!hasPersonName) {
-        // No PersonName found - create one from personId (will show truncated hash until better name available)
+        // No PersonName found - store one from personId (will show truncated hash until better name available)
         const displayName = `Contact ${String(personId).substring(0, 8)}`;
-        console.log('[ContactCreation] Profile missing PersonName - adding placeholder:', displayName);
-        profileData.personDescriptions.unshift({
+        console.log('[ContactCreation] Profile missing PersonName - storing placeholder:', displayName);
+        const personNameHash = await storeUnversionedObject({
             $type$: 'PersonName',
             name: displayName
         });
+        profileData.personDescriptions.unshift(personNameHash);
     }
 
     // Store to ensure vheads exist (CHUM sends object data but not version nodes)

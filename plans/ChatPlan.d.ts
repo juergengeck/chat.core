@@ -4,7 +4,18 @@
  * Transport-agnostic plan for chat operations.
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api architecture.
+ *
+ * SELF-SUFFICIENT: Creates GroupPlan internally using nodeOneCore.topicGroupManager.
+ * Platform code just needs to pass fundamental dependencies.
  */
+export interface StoryFactory {
+    recordExecution(metadata: any, operation: () => Promise<any>): Promise<any>;
+}
+export interface GroupPlan {
+    createGroup(request: any): Promise<any>;
+    getGroupForTopic(request: any): Promise<any>;
+    getTopicParticipants(request: any): Promise<any>;
+}
 export interface InitializeDefaultChatsRequest {
 }
 export interface InitializeDefaultChatsResponse {
@@ -50,6 +61,16 @@ export interface CreateConversationResponse {
     data?: any;
     error?: string;
 }
+export interface CreateP2PConversationRequest {
+    localPersonId: any;
+    remotePersonId: any;
+}
+export interface CreateP2PConversationResponse {
+    success: boolean;
+    topicId?: string;
+    topicRoom?: any;
+    error?: string;
+}
 export interface GetConversationsRequest {
     limit?: number;
     offset?: number;
@@ -83,7 +104,11 @@ export interface AddParticipantsRequest {
 }
 export interface AddParticipantsResponse {
     success: boolean;
-    data?: any;
+    data?: {
+        conversationId: string;
+        addedParticipants: string[];
+        newConversationId?: string;
+    };
     error?: string;
 }
 export interface ClearConversationRequest {
@@ -141,34 +166,67 @@ export interface VerifyMessageAssertionResponse {
 /**
  * ChatPlan - Pure business logic for chat operations
  *
+ * SELF-SUFFICIENT: Automatically creates GroupPlan using nodeOneCore.topicGroupManager.
+ * GroupPlan internally creates StoryFactory and AssemblyPlan for Story/Assembly tracking.
+ *
  * Dependencies injected via constructor:
- * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, etc.
- * - stateManager: State management service
- * - messageVersionManager: Message versioning manager
- * - messageAssertionManager: Message assertion/certificate manager
+ * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, topicGroupManager, storage functions
+ * - stateManager: State management service (optional)
+ * - messageVersionManager: Message versioning manager (optional)
+ * - messageAssertionManager: Message assertion/certificate manager (optional)
+ * - groupPlan: Advanced override for custom GroupPlan (optional - for power users)
+ * - storyFactory: Story/Assembly automation (optional - for compatibility)
+ *
+ * Platform code can now simply:
+ * ```typescript
+ * const chatPlan = new ChatPlan(nodeOneCore);
+ * ```
+ * All internal wiring (GroupPlan → StoryFactory → AssemblyPlan) happens automatically.
  */
 export declare class ChatPlan {
+    static get planId(): string;
+    static get name(): string;
+    static get description(): string;
+    static get version(): string;
     private nodeOneCore;
     private stateManager;
     private messageVersionManager;
     private messageAssertionManager;
-    constructor(nodeOneCore: any, stateManager?: any, messageVersionManager?: any, messageAssertionManager?: any);
+    private groupPlan?;
+    private storyFactory?;
+    constructor(nodeOneCore: any, stateManager?: any, messageVersionManager?: any, messageAssertionManager?: any, groupPlan?: GroupPlan, storyFactory?: StoryFactory);
     /**
      * Set message managers after initialization
      */
     setMessageManagers(versionManager: any, assertionManager: any): void;
     /**
+     * Set GroupPlan after initialization (for gradual adoption)
+     */
+    setGroupPlan(plan: GroupPlan): void;
+    /**
+     * Set StoryFactory after initialization (for gradual adoption)
+     */
+    setStoryFactory(factory: StoryFactory): void;
+    /**
+     * Get current instance version hash for Story/Assembly tracking
+     */
+    private getCurrentInstanceVersion;
+    /**
      * Initialize default chats
      */
-    initializeDefaultChats(request: InitializeDefaultChatsRequest): Promise<InitializeDefaultChatsResponse>;
+    initializeDefaultChats(_request: InitializeDefaultChatsRequest): Promise<InitializeDefaultChatsResponse>;
     /**
      * UI ready signal
      */
-    uiReady(request: UIReadyRequest): Promise<UIReadyResponse>;
+    uiReady(_request: UIReadyRequest): Promise<UIReadyResponse>;
     /**
      * Send a message to a conversation
      */
     sendMessage(request: SendMessageRequest): Promise<SendMessageResponse>;
+    /**
+     * Internal implementation of sendMessage (wrapped by Story recording)
+     */
+    private sendMessageInternal;
     /**
      * Get messages for a conversation
      */
@@ -178,6 +236,10 @@ export declare class ChatPlan {
      */
     createConversation(request: CreateConversationRequest): Promise<CreateConversationResponse>;
     /**
+     * Internal implementation of createConversation (wrapped by Story+Assembly recording)
+     */
+    private createConversationInternal;
+    /**
      * Get all conversations
      */
     getConversations(request: GetConversationsRequest): Promise<GetConversationsResponse>;
@@ -186,11 +248,24 @@ export declare class ChatPlan {
      */
     getConversation(request: GetConversationRequest): Promise<GetConversationResponse>;
     /**
+     * Create a P2P (one-to-one) conversation
+     *
+     * Uses P2PTopicService internally to create topic with proper channel setup.
+     * All P2P topic creation MUST go through this method - platform code should NOT
+     * call P2PTopicService or TopicModel directly.
+     */
+    createP2PConversation(request: CreateP2PConversationRequest): Promise<CreateP2PConversationResponse>;
+    /**
      * Get current user
      */
-    getCurrentUser(request: GetCurrentUserRequest): Promise<GetCurrentUserResponse>;
+    getCurrentUser(_request: GetCurrentUserRequest): Promise<GetCurrentUserResponse>;
     /**
      * Add participants to a conversation
+     *
+     * ARCHITECTURE: Different group = Different chat
+     * When participants change, we create a NEW chat with a NEW topicId.
+     * This provides conversation continuity from a user perspective while
+     * maintaining proper group/topic separation.
      */
     addParticipants(request: AddParticipantsRequest): Promise<AddParticipantsResponse>;
     /**

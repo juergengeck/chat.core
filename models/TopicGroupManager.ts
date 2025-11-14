@@ -54,6 +54,13 @@ export class TopicGroupManager {
   }
 
   /**
+   * Get cached group for a topic (internal use by GroupPlan)
+   */
+  getCachedGroupForTopic(topicId: string): SHA256IdHash<any> | undefined {
+    return this.conversationGroups.get(topicId);
+  }
+
+  /**
    * Create an outbound objectFilter for CHUM sync (what we SEND to peers)
    * Simple allowlist: only share Groups we created
    *
@@ -562,20 +569,11 @@ export class TopicGroupManager {
     console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for HashGroup ${String(hashGroupHash).substring(0, 8)}`);
     console.log(`[TopicGroupManager] ✅ Signature: ${String(certResult.signature.hash).substring(0, 8)}, License: ${String(certResult.license.hash).substring(0, 8)}`);
 
-    // Grant access to all objects - CHUM will sync based on new access rights
+    // PROTOCOL: Share certificate objects P2P with each participant BEFORE sharing the Group
+    console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing certificates P2P with ${participants.length} participants`);
+
+    // Step 1: Share certificates FIRST (P2P to each participant)
     await this.storageDeps.createAccess([
-      {
-        id: storedHashGroup.hash,
-        person: participants,
-        group: [],
-        mode: SET_ACCESS_MODE.ADD
-      },
-      {
-        id: groupIdHash,
-        person: participants,
-        group: [],
-        mode: SET_ACCESS_MODE.ADD
-      },
       {
         object: certResult.certificate.hash,
         person: participants,
@@ -596,7 +594,31 @@ export class TopicGroupManager {
       }
     ]);
 
-    console.log(`[TopicGroupManager] ✅ Access granted to ${participants.length} participants`);
+    console.log(`[TopicGroupManager] ✅ Step 1: Shared certificates P2P with all participants`);
+
+    // Step 2: Wait for certificate propagation via CHUM
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    console.log(`[TopicGroupManager] ✅ Step 2: Certificates propagated via CHUM`);
+
+    // Step 3: NOW share HashGroup and Group (participants will validate certificates)
+    await this.storageDeps.createAccess([
+      {
+        id: storedHashGroup.hash,
+        person: participants,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        id: groupIdHash,
+        person: participants,
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      }
+    ]);
+
+    console.log(`[TopicGroupManager] ✅ Step 3: Shared HashGroup and Group (participants will validate certificate)`);
+    console.log(`[TopicGroupManager] ✅ CERTIFICATE SHARING PROTOCOL COMPLETE`);
 
     // Create the topic using TopicModel
     if (!this.oneCore.topicModel) {
@@ -792,26 +814,120 @@ export class TopicGroupManager {
       console.log(`[TopicGroupManager] NEW group hash: ${String(newGroupIdHash).substring(0, 8)}`);
       console.log(`[TopicGroupManager] Updated group participants:`, [...currentMembers, ...newMembers].map((p: any) => String(p).substring(0, 8)));
 
-      // Update cache with new version and add to allowed list
+      // Update cache with new version and add HashGroup to allowed list (for CHUM sync)
       this.conversationGroups.set(topicId, newGroupIdHash);
-      this.allowedGroups.add(newGroupIdHash);
+      this.allowedGroups.add(storedHashGroup.hash);
       console.log(`[TopicGroupManager] ✅ Updated cache: topic ${topicId} -> ${String(newGroupIdHash).substring(0, 8)}`);
-      console.log(`[TopicGroupManager] ✅ Added updated group to allowed groups`);
+      console.log(`[TopicGroupManager] ✅ Added updated HashGroup ${String(storedHashGroup.hash).substring(0, 8)} to allowed groups`);
 
-      console.log(`[TopicGroupManager] Updated group for topic ${topicId}: added ${newMembers.length} new participants (total: ${[...currentMembers, ...newMembers].length})`);
+      // CRITICAL: Create AffirmationCertificate for the NEW HashGroup
+      // This cryptographically attests that we (the owner) created this group
+      const certResult = await this.oneCore.leuteModel.trust.certify(
+        'AffirmationCertificate',
+        { data: storedHashGroup.hash },
+        this.oneCore.ownerId
+      );
+      console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for updated HashGroup`);
+
+      // PROTOCOL: Share certificate objects P2P with each participant BEFORE sharing the Group
+      // This ensures participants can validate the Group when they receive it
+      const allParticipants = [...currentMembers, ...newMembers];
+
+      console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing certificates P2P with ${allParticipants.length} participants`);
+
+      // Step 1: Grant access to certificate objects (Certificate, Signature, License) FIRST
+      // These are shared P2P to each participant
+      await this.storageDeps.createAccess([
+        {
+          object: certResult.certificate.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        },
+        {
+          object: certResult.signature.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        },
+        {
+          object: certResult.license.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        }
+      ]);
+
+      console.log(`[TopicGroupManager] ✅ Step 1: Shared certificates P2P with all participants`);
+
+      // Step 2: Wait for certificate sharing to propagate via CHUM
+      // In practice, CHUM will sync these immediately since they have person-based access
+      // Adding a small delay to ensure certificate objects are available before Group
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      console.log(`[TopicGroupManager] ✅ Step 2: Certificates propagated via CHUM`);
+
+      // Step 3: NOW grant access to HashGroup and Group
+      // Participants will validate the certificate when they receive these
+      await this.storageDeps.createAccess([
+        {
+          id: storedHashGroup.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        },
+        {
+          id: newGroupIdHash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        }
+      ]);
+
+      console.log(`[TopicGroupManager] ✅ Step 3: Shared HashGroup and Group (participants will validate certificate)`);
+      console.log(`[TopicGroupManager] ✅ CERTIFICATE SHARING PROTOCOL COMPLETE`);
+
+      // Create channels for NEW participants (AI contacts, etc. - not remote humans)
+      // Remote humans will create their own channels when they receive the Group via CHUM
+      for (const participantId of newMembers) {
+        if (participantId && this.oneCore.channelManager) {
+          try {
+            // Check if this is an AI participant (AI needs channels created locally)
+            const isAI = this.oneCore.aiAssistantModel?.isAIPerson?.(participantId) || false;
+
+            if (isAI) {
+              console.log(`[TopicGroupManager] Creating channel for AI participant ${String(participantId).substring(0, 8)}`);
+              await this.oneCore.channelManager.createChannel(topicId, participantId);
+
+              // Grant the NEW group access to this channel
+              const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
+                $type$: 'ChannelInfo',
+                id: topicId,
+                owner: participantId
+              });
+
+              await this.storageDeps.createAccess([{
+                id: channelHash,
+                person: [],
+                group: [newGroupIdHash],
+                mode: SET_ACCESS_MODE.ADD
+              }]);
+
+              console.log(`[TopicGroupManager] ✅ Created channel and granted group access for AI ${String(participantId).substring(0, 8)}`);
+            } else {
+              console.log(`[TopicGroupManager] Skipping channel creation for remote participant ${String(participantId).substring(0, 8)} (will create their own via CHUM)`);
+            }
+          } catch (error) {
+            console.warn(`[TopicGroupManager] Channel creation for ${String(participantId).substring(0, 8)} failed:`, (error as Error).message);
+          }
+        }
+      }
+
+      console.log(`[TopicGroupManager] Updated group for topic ${topicId}: added ${newMembers.length} new participants (total: ${allParticipants.length})`);
 
       groupIdHash = newGroupIdHash;
     }
 
-    // Grant access to the new participants
-    await this.storageDeps.createAccess([{
-      id: groupIdHash,
-      person: participants,
-      group: [],
-      mode: SET_ACCESS_MODE.ADD
-    }]);
-
-    console.log(`[TopicGroupManager] ✅ Granted access to ${participants.length} participants for group ${String(groupIdHash).substring(0, 8)}`);
     console.log(`[TopicGroupManager] ========== ADD PARTICIPANTS END ==========`);
   }
 

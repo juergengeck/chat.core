@@ -41,6 +41,10 @@ export declare class TopicGroupManager {
     private allowedGroups;
     constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps);
     /**
+     * Get cached group for a topic (internal use by GroupPlan)
+     */
+    getCachedGroupForTopic(topicId: string): SHA256IdHash<any> | undefined;
+    /**
      * Create an outbound objectFilter for CHUM sync (what we SEND to peers)
      * Simple allowlist: only share Groups we created
      *

@@ -6,6 +6,7 @@ import ProfileModel from '@refinio/one.models/lib/models/Leute/ProfileModel.js';
 import SomeoneModel from '@refinio/one.models/lib/models/Leute/SomeoneModel.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { storeVersionedObject } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 /**
  * Track profiles we've already attempted to process to prevent infinite loops
@@ -19,25 +20,28 @@ const PROFILE_RETRY_DELAY = 60000; // Don't retry for 60 seconds
 export async function createProfileAndSomeoneForPerson(personId, leuteModel, profileOptions = {}) {
     console.log(`[ContactCreation] 📝 Creating new contact for Person ${personId?.substring(0, 8)}...`);
     try {
-        // 1. Create Profile using ProfileModel API
-        console.log('[ContactCreation]   ├─ Creating Profile object...');
-        const profile = await ProfileModel.constructWithNewProfile(ensureIdHash(personId), await leuteModel.myMainIdentity(), 'default', [], // communicationEndpoints
-        [] // personDescriptions - will add after creation
-        );
-        // Add display name if provided
+        // 1. Store PersonName and descriptors FIRST (must be stored before referencing)
+        const personDescriptionHashes = [];
         if (profileOptions.displayName) {
-            console.log(`[ContactCreation] Adding display name: ${profileOptions.displayName}`);
-            profile.personDescriptions.push({
+            console.log(`[ContactCreation] Storing PersonName: ${profileOptions.displayName}`);
+            const personNameHash = await storeUnversionedObject({
                 $type$: 'PersonName',
                 name: profileOptions.displayName
             });
+            personDescriptionHashes.push(personNameHash);
         }
-        // Add descriptors if provided
+        // Store any additional descriptors
         if (profileOptions.descriptors && Array.isArray(profileOptions.descriptors)) {
-            profileOptions.descriptors.forEach((descriptor) => {
-                profile.personDescriptions.push(descriptor);
-            });
+            for (const descriptor of profileOptions.descriptors) {
+                const descriptorHash = await storeUnversionedObject(descriptor);
+                personDescriptionHashes.push(descriptorHash);
+            }
         }
+        // 2. Create Profile using ProfileModel API with stored hashes
+        console.log('[ContactCreation]   ├─ Creating Profile object...');
+        const profile = await ProfileModel.constructWithNewProfile(ensureIdHash(personId), await leuteModel.myMainIdentity(), 'default', [], // communicationEndpoints
+        personDescriptionHashes // Hash references to stored PersonDescription objects
+        );
         await profile.saveAndLoad();
         console.log(`[ContactCreation]   ├─ Profile saved: ${profile.idHash.toString().substring(0, 8)}`);
         // 2. Create Someone using SomeoneModel API
@@ -146,13 +150,14 @@ export async function handleReceivedProfile(personId, profileData, leuteModel) {
     }
     const hasPersonName = profileData.personDescriptions.some((desc) => desc.$type$ === 'PersonName');
     if (!hasPersonName) {
-        // No PersonName found - create one from personId (will show truncated hash until better name available)
+        // No PersonName found - store one from personId (will show truncated hash until better name available)
         const displayName = `Contact ${String(personId).substring(0, 8)}`;
-        console.log('[ContactCreation] Profile missing PersonName - adding placeholder:', displayName);
-        profileData.personDescriptions.unshift({
+        console.log('[ContactCreation] Profile missing PersonName - storing placeholder:', displayName);
+        const personNameHash = await storeUnversionedObject({
             $type$: 'PersonName',
             name: displayName
         });
+        profileData.personDescriptions.unshift(personNameHash);
     }
     // Store to ensure vheads exist (CHUM sends object data but not version nodes)
     console.log('[ContactCreation] Creating Someone for Profile from CHUM/external source...');

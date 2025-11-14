@@ -4,26 +4,66 @@
  * Transport-agnostic plan for chat operations.
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api architecture.
+ *
+ * SELF-SUFFICIENT: Creates GroupPlan internally using nodeOneCore.topicGroupManager.
+ * Platform code just needs to pass fundamental dependencies.
  */
+import { GroupPlan as GroupPlanImpl } from './GroupPlan.js';
+import { createP2PTopic } from '../services/P2PTopicService.js';
 /**
  * ChatPlan - Pure business logic for chat operations
  *
+ * SELF-SUFFICIENT: Automatically creates GroupPlan using nodeOneCore.topicGroupManager.
+ * GroupPlan internally creates StoryFactory and AssemblyPlan for Story/Assembly tracking.
+ *
  * Dependencies injected via constructor:
- * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, etc.
- * - stateManager: State management service
- * - messageVersionManager: Message versioning manager
- * - messageAssertionManager: Message assertion/certificate manager
+ * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, topicGroupManager, storage functions
+ * - stateManager: State management service (optional)
+ * - messageVersionManager: Message versioning manager (optional)
+ * - messageAssertionManager: Message assertion/certificate manager (optional)
+ * - groupPlan: Advanced override for custom GroupPlan (optional - for power users)
+ * - storyFactory: Story/Assembly automation (optional - for compatibility)
+ *
+ * Platform code can now simply:
+ * ```typescript
+ * const chatPlan = new ChatPlan(nodeOneCore);
+ * ```
+ * All internal wiring (GroupPlan → StoryFactory → AssemblyPlan) happens automatically.
  */
 export class ChatPlan {
+    static get planId() { return 'chat'; }
+    static get name() { return 'Chat'; }
+    static get description() { return 'Manages chat conversations, messages, and participants'; }
+    static get version() { return '1.0.0'; }
     nodeOneCore;
     stateManager;
     messageVersionManager;
     messageAssertionManager;
-    constructor(nodeOneCore, stateManager, messageVersionManager, messageAssertionManager) {
+    groupPlan;
+    storyFactory;
+    constructor(nodeOneCore, stateManager, messageVersionManager, messageAssertionManager, groupPlan, storyFactory) {
         this.nodeOneCore = nodeOneCore;
         this.stateManager = stateManager;
         this.messageVersionManager = messageVersionManager;
         this.messageAssertionManager = messageAssertionManager;
+        this.storyFactory = storyFactory;
+        // Create GroupPlan if not provided (using topicGroupManager from nodeOneCore)
+        if (groupPlan) {
+            // Use provided GroupPlan (backward compatibility or power user override)
+            this.groupPlan = groupPlan;
+        }
+        else if (nodeOneCore.topicGroupManager) {
+            // Auto-create GroupPlan with storage functions from nodeOneCore
+            const storage = nodeOneCore.storeVersionedObject && nodeOneCore.getObjectByIdHash && nodeOneCore.getObject
+                ? {
+                    storeVersionedObject: nodeOneCore.storeVersionedObject.bind(nodeOneCore),
+                    getObjectByIdHash: nodeOneCore.getObjectByIdHash.bind(nodeOneCore),
+                    getObject: nodeOneCore.getObject.bind(nodeOneCore)
+                }
+                : undefined;
+            this.groupPlan = new GroupPlanImpl(nodeOneCore.topicGroupManager, nodeOneCore, storage);
+            console.log('[ChatPlan] ✅ Auto-created GroupPlan with Story/Assembly tracking');
+        }
     }
     /**
      * Set message managers after initialization
@@ -33,9 +73,28 @@ export class ChatPlan {
         this.messageAssertionManager = assertionManager;
     }
     /**
+     * Set GroupPlan after initialization (for gradual adoption)
+     */
+    setGroupPlan(plan) {
+        this.groupPlan = plan;
+    }
+    /**
+     * Set StoryFactory after initialization (for gradual adoption)
+     */
+    setStoryFactory(factory) {
+        this.storyFactory = factory;
+    }
+    /**
+     * Get current instance version hash for Story/Assembly tracking
+     */
+    getCurrentInstanceVersion() {
+        // Try to get from nodeOneCore, fallback to timestamp if not available
+        return this.nodeOneCore.instanceVersion || `instance-${Date.now()}`;
+    }
+    /**
      * Initialize default chats
      */
-    async initializeDefaultChats(request) {
+    async initializeDefaultChats(_request) {
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 return { success: false, error: 'Node not ready' };
@@ -51,7 +110,7 @@ export class ChatPlan {
     /**
      * UI ready signal
      */
-    async uiReady(request) {
+    async uiReady(_request) {
         try {
             // Notify the PeerMessageListener that UI is ready (platform-specific)
             if (this.nodeOneCore.peerMessageListener) {
@@ -70,12 +129,20 @@ export class ChatPlan {
     async sendMessage(request) {
         // Disabled: Pollutes JSON-RPC stdout in MCP server
         // console.error('[ChatPlan] Send message:', { conversationId: request.conversationId, content: request.content, senderId: request.senderId });
+        // Use provided senderId or default to owner
+        const userId = request.senderId || this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
+        // StoryFactory disabled - Story requires product (Assembly) reference which isn't implemented yet
+        // TODO: Re-enable when Assembly/Story integration is complete
+        return await this.sendMessageInternal(request, userId);
+    }
+    /**
+     * Internal implementation of sendMessage (wrapped by Story recording)
+     */
+    async sendMessageInternal(request, userId) {
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('TopicModel not initialized');
             }
-            // Use provided senderId or default to owner
-            const userId = request.senderId || this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
             if (!userId) {
                 throw new Error('User not authenticated');
             }
@@ -121,7 +188,7 @@ export class ChatPlan {
                 data: {
                     id: `msg-${Date.now()}`,
                     conversationId: request.conversationId,
-                    content: request.content, // Fixed: use request.content to match interface
+                    content: request.content,
                     sender: this.nodeOneCore.ownerId,
                     senderName: 'You',
                     timestamp: Date.now(),
@@ -130,11 +197,7 @@ export class ChatPlan {
             };
         }
         catch (error) {
-            console.error('[ChatPlan] Error sending message:', error);
-            return {
-                success: false,
-                error: error.message
-            };
+            throw error;
         }
     }
     /**
@@ -173,8 +236,27 @@ export class ChatPlan {
                 let senderName = 'Unknown';
                 // Get sender from either author or data.sender
                 const sender = msg.author || msg.data?.sender;
+                // Detect if sender is an AI using AIAssistantModel (check FIRST)
+                let isAI = false;
+                if (sender && this.nodeOneCore.aiAssistantModel) {
+                    try {
+                        isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
+                        // If it's an AI, try to get the model name as display name
+                        if (isAI) {
+                            const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(sender);
+                            if (modelId) {
+                                senderName = modelId; // Use model ID as display name (e.g., "gpt-oss:20b")
+                            }
+                        }
+                    }
+                    catch (e) {
+                        // If detection fails, default to false
+                        isAI = false;
+                    }
+                }
                 // Look up sender name from LeuteModel (works for ALL participants)
-                if (sender) {
+                // Only do this if we haven't already set a name (e.g., from AI model)
+                if (sender && senderName === 'Unknown') {
                     try {
                         if (this.nodeOneCore.leuteModel) {
                             // First check if sender is the current user
@@ -203,7 +285,7 @@ export class ChatPlan {
                                             const profile = await someone.mainProfile();
                                             if (profile) {
                                                 const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
-                                                senderName = personName?.name || profile.name || 'User';
+                                                senderName = personName?.name || profile.name || 'Unknown';
                                                 break;
                                             }
                                         }
@@ -222,17 +304,6 @@ export class ChatPlan {
                 const thinking = msg.data?.thinking || msg.thinking;
                 if (thinking) {
                     console.log(`[ChatPlan] 🧠 Message ${msg.id?.substring(0, 8)} has thinking (${thinking.length} chars)`);
-                }
-                // Detect if sender is an AI using AIAssistantModel
-                let isAI = false;
-                if (sender && this.nodeOneCore.aiAssistantModel) {
-                    try {
-                        isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
-                    }
-                    catch (e) {
-                        // If detection fails, default to false
-                        isAI = false;
-                    }
                 }
                 return {
                     id: msg.id,
@@ -276,6 +347,15 @@ export class ChatPlan {
      * Create a new conversation
      */
     async createConversation(request) {
+        const userId = this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
+        // StoryFactory disabled - Story requires product (Assembly) reference which isn't implemented yet
+        // TODO: Re-enable when Assembly/Story integration is complete
+        return await this.createConversationInternal(request, userId);
+    }
+    /**
+     * Internal implementation of createConversation (wrapped by Story+Assembly recording)
+     */
+    async createConversationInternal(request, userId) {
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
@@ -283,23 +363,38 @@ export class ChatPlan {
             if (!this.nodeOneCore.topicGroupManager) {
                 throw new Error('TopicGroupManager not initialized');
             }
-            const userId = this.nodeOneCore.ownerId || this.stateManager?.getState('user.id');
             if (!userId) {
                 throw new Error('User not authenticated');
             }
             const type = request.type || 'direct';
             const participants = request.participants || [];
             const name = request.name || `Conversation ${Date.now()}`;
-            console.error(`[ChatPlan] 🔍 BEFORE createGroupTopic - participants.length: ${participants.length}`);
-            console.error(`[ChatPlan] 🔍 BEFORE createGroupTopic - participants:`, participants);
+            console.error(`[ChatPlan] 🔍 BEFORE createGroup - participants.length: ${participants.length}`);
+            console.error(`[ChatPlan] 🔍 BEFORE createGroup - participants:`, participants);
             // Generate deterministic topic ID for the conversation
             // Use Date.now() + random component to prevent burst collisions
             const randomComponent = Math.random().toString(36).substring(2, 8);
             const topicId = `group-${Date.now()}-${randomComponent}-${String(userId).substring(0, 8)}`;
-            // Create topic using TopicGroupManager (creates group, grants access, creates owner's channel)
-            const topic = await this.nodeOneCore.topicGroupManager.createGroupTopic(name, topicId, participants);
-            console.error(`[ChatPlan] 🔍 AFTER createGroupTopic - participants.length: ${participants.length}`);
-            console.error(`[ChatPlan] 🔍 AFTER createGroupTopic - participants:`, participants);
+            // Create group using GroupPlan (creates Story/Assembly, delegates to TopicGroupManager)
+            if (this.groupPlan) {
+                const result = await this.groupPlan.createGroup({
+                    topicId,
+                    topicName: name,
+                    participants,
+                    autoAddChumConnections: false
+                });
+                if (!result.success) {
+                    throw new Error(result.error || 'Group creation failed');
+                }
+                console.error(`[ChatPlan] ✅ Created group via GroupPlan - Story: ${result.storyIdHash?.substring(0, 8)}, Assembly: ${result.assemblyIdHash?.substring(0, 8)}`);
+            }
+            else {
+                // Fallback: Direct TopicGroupManager call (no Story/Assembly)
+                await this.nodeOneCore.topicGroupManager.createGroupTopic(name, topicId, participants);
+                console.error(`[ChatPlan] ⚠️ Created group via TopicGroupManager (no GroupPlan - no Story/Assembly)`);
+            }
+            console.error(`[ChatPlan] 🔍 AFTER createGroup - participants.length: ${participants.length}`);
+            console.error(`[ChatPlan] 🔍 AFTER createGroup - participants:`, participants);
             // Configure channel for group conversations (one.leute pattern)
             // This ensures Person/Profile objects arriving via CHUM are automatically registered
             if (this.nodeOneCore.channelManager) {
@@ -317,11 +412,14 @@ export class ChatPlan {
                             if (modelId) {
                                 this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, modelId);
                                 console.error(`[ChatPlan] Detected AI participant ${participantId.substring(0, 8)} with model: ${modelId}`);
-                                // Trigger welcome message - don't await, but start it NOW (not via setImmediate)
-                                // This ensures the thinking event fires before IPC returns
-                                this.nodeOneCore.aiAssistantModel.handleNewTopic(topicId).catch((error) => {
-                                    console.error('[ChatPlan] Failed to generate welcome message:', error);
-                                });
+                                // Default chats (hi/lama) are handled by AITopicManager callback
+                                // User-created chats need welcome message triggered here
+                                const isDefaultChat = topicId === 'hi' || topicId === 'lama';
+                                if (!isDefaultChat) {
+                                    this.nodeOneCore.aiAssistantModel.handleNewTopic(topicId).catch((error) => {
+                                        console.error('[ChatPlan] Failed to generate welcome message:', error);
+                                    });
+                                }
                                 break; // Only register first AI participant
                             }
                         }
@@ -344,11 +442,7 @@ export class ChatPlan {
             };
         }
         catch (error) {
-            console.error('[ChatPlan] Error creating conversation:', error);
-            return {
-                success: false,
-                error: error.message
-            };
+            throw error;
         }
     }
     /**
@@ -362,24 +456,28 @@ export class ChatPlan {
             const limit = request.limit || 20;
             const offset = request.offset || 0;
             const topics = await this.nodeOneCore.topicModel.topics.all();
+            console.log(`[ChatPlan] getConversations: Found ${topics.length} topics:`, topics.map((t) => ({ id: t.id, name: t.name })));
             // Convert to conversation format
             const conversations = await Promise.all(topics.map(async (topic) => {
                 const topicId = topic.id;
                 const name = topic.name;
+                console.log(`[ChatPlan] Processing topic: ${topicId} (${name})`);
                 // Get participants from topic group with enriched data (names)
                 let participants = [];
                 try {
                     let groupIdHash = null;
                     if (this.nodeOneCore.topicGroupManager) {
                         groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(topicId);
+                        console.log(`[ChatPlan] Topic ${topicId} (${name}) - groupIdHash:`, groupIdHash);
                     }
                     if (!groupIdHash) {
-                        console.warn(`[ChatPlan] Topic ${topicId} has no group - skipping participant retrieval (old/broken topic)`);
+                        console.warn(`[ChatPlan] ⚠️ Topic ${topicId} (${name}) has NO GROUP - participants will be empty`);
                         // Skip topics without groups - they're from old implementations
                         // Set empty participants array and continue
                         participants = [];
                     }
                     else {
+                        console.log(`[ChatPlan] Topic ${topicId} (${name}) - Loading group participants...`);
                         const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
                         const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
                         const groupResult = await getObjectByIdHash(groupIdHash);
@@ -407,22 +505,39 @@ export class ChatPlan {
                                                     }
                                                 }
                                                 else {
-                                                    // Check other contacts
-                                                    const others = await this.nodeOneCore.leuteModel.others();
-                                                    for (const someone of others) {
+                                                    // Check if it's an AI participant FIRST
+                                                    if (this.nodeOneCore.aiAssistantModel) {
                                                         try {
-                                                            const personId = await someone.mainIdentity();
-                                                            if (personId && personId.toString() === participantId) {
-                                                                const profile = await someone.mainProfile();
-                                                                if (profile) {
-                                                                    const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
-                                                                    name = personName?.name || profile.name || 'User';
-                                                                    break;
+                                                            const isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
+                                                            if (isAI) {
+                                                                const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
+                                                                if (modelId) {
+                                                                    name = modelId; // Use model ID as name (e.g., "gpt-oss:20b")
                                                                 }
                                                             }
                                                         }
                                                         catch (e) {
-                                                            // Continue to next person
+                                                            console.warn(`[ChatPlan] Failed to check if participant is AI:`, e);
+                                                        }
+                                                    }
+                                                    // If not AI or AI check failed, check other contacts
+                                                    if (name === 'Unknown') {
+                                                        const others = await this.nodeOneCore.leuteModel.others();
+                                                        for (const someone of others) {
+                                                            try {
+                                                                const personId = await someone.mainIdentity();
+                                                                if (personId && personId.toString() === participantId) {
+                                                                    const profile = await someone.mainProfile();
+                                                                    if (profile) {
+                                                                        const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
+                                                                        name = personName?.name || profile.name || 'User';
+                                                                        break;
+                                                                    }
+                                                                }
+                                                            }
+                                                            catch (e) {
+                                                                // Continue to next person
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -512,8 +627,10 @@ export class ChatPlan {
             }));
             // Sort by last activity
             const sortedConversations = conversations.sort((a, b) => b.lastActivity - a.lastActivity);
+            console.log(`[ChatPlan] After conversion: ${conversations.length} conversations:`, conversations.map(c => ({ id: c.id, name: c.name, participants: c.participants.length, isAITopic: c.isAITopic })));
             // Apply pagination
             const paginatedConversations = sortedConversations.slice(offset, offset + limit);
+            console.log(`[ChatPlan] Returning ${paginatedConversations.length} conversations (offset: ${offset}, limit: ${limit})`);
             return {
                 success: true,
                 data: paginatedConversations
@@ -561,9 +678,51 @@ export class ChatPlan {
         }
     }
     /**
+     * Create a P2P (one-to-one) conversation
+     *
+     * Uses P2PTopicService internally to create topic with proper channel setup.
+     * All P2P topic creation MUST go through this method - platform code should NOT
+     * call P2PTopicService or TopicModel directly.
+     */
+    async createP2PConversation(request) {
+        try {
+            if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
+                throw new Error('Node not initialized');
+            }
+            const { localPersonId, remotePersonId } = request;
+            console.log('[ChatPlan] Creating P2P conversation');
+            console.log('[ChatPlan]   Local person:', localPersonId?.substring(0, 8));
+            console.log('[ChatPlan]   Remote person:', remotePersonId?.substring(0, 8));
+            // Use P2PTopicService to create the topic
+            const { topicRoom, wasCreated } = await createP2PTopic(this.nodeOneCore.topicModel, localPersonId, remotePersonId);
+            // Generate P2P topic ID (lexicographically sorted)
+            const topicId = localPersonId < remotePersonId
+                ? `${localPersonId}<->${remotePersonId}`
+                : `${remotePersonId}<->${localPersonId}`;
+            if (wasCreated) {
+                console.log('[ChatPlan] ✅ Created new P2P conversation:', topicId);
+            }
+            else {
+                console.log('[ChatPlan] ✅ Using existing P2P conversation:', topicId);
+            }
+            return {
+                success: true,
+                topicId,
+                topicRoom
+            };
+        }
+        catch (error) {
+            console.error('[ChatPlan] Error creating P2P conversation:', error);
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+    /**
      * Get current user
      */
-    async getCurrentUser(request) {
+    async getCurrentUser(_request) {
         try {
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.ownerId) {
                 // Fallback to state manager
@@ -622,24 +781,98 @@ export class ChatPlan {
     }
     /**
      * Add participants to a conversation
+     *
+     * ARCHITECTURE: Different group = Different chat
+     * When participants change, we create a NEW chat with a NEW topicId.
+     * This provides conversation continuity from a user perspective while
+     * maintaining proper group/topic separation.
      */
     async addParticipants(request) {
         try {
+            console.log('[ChatPlan] ========== ADD PARTICIPANTS START ==========');
+            console.log('[ChatPlan] Original conversation:', request.conversationId);
+            console.log('[ChatPlan] Participant IDs to add:', request.participantIds);
             if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
                 throw new Error('Models not initialized');
             }
-            // Get topic room
-            const topicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
-            if (!topicRoom) {
+            if (!this.nodeOneCore.topicGroupManager) {
+                throw new Error('TopicGroupManager not initialized');
+            }
+            // Verify original topic exists
+            const originalTopicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
+            if (!originalTopicRoom) {
                 throw new Error(`Topic not found: ${request.conversationId}`);
             }
-            // Add participants
-            // TODO: Implement actual participant addition logic
+            // Get current participants from the original group
+            let currentParticipants = [];
+            try {
+                currentParticipants = await this.nodeOneCore.topicGroupManager.getTopicParticipants(request.conversationId);
+                console.log('[ChatPlan] Current participants:', currentParticipants.map((p) => p.substring(0, 8)));
+            }
+            catch (error) {
+                console.log('[ChatPlan] No existing group for topic (legacy topic)');
+                // For legacy topics without groups, assume just the owner
+                currentParticipants = [this.nodeOneCore.ownerId];
+            }
+            // Calculate new participant list (current + new)
+            const allParticipants = [...new Set([...currentParticipants, ...request.participantIds])];
+            console.log('[ChatPlan] New participant list:', allParticipants.map((p) => p.substring(0, 8)));
+            // Generate new topic ID for the new group
+            // Use timestamp + hash of sorted participant IDs for determinism
+            const participantHash = allParticipants.sort().join('').substring(0, 16);
+            const newTopicId = `group-${Date.now()}-${participantHash}`;
+            console.log('[ChatPlan] New topic ID:', newTopicId);
+            // Get original topic name
+            const originalTopic = await this.nodeOneCore.topicModel.topics.queryById(request.conversationId);
+            const topicName = originalTopic?.name || `Chat ${newTopicId}`;
+            // Create NEW topic with the new group (all participants)
+            // Remove current owner from participantIds since createGroup adds owner automatically
+            const participantsExcludingOwner = allParticipants.filter((p) => p !== this.nodeOneCore.ownerId);
+            if (this.groupPlan) {
+                const result = await this.groupPlan.createGroup({
+                    topicId: newTopicId,
+                    topicName,
+                    participants: participantsExcludingOwner,
+                    autoAddChumConnections: false
+                });
+                if (!result.success) {
+                    throw new Error(result.error || 'Group creation failed');
+                }
+                console.log(`[ChatPlan] ✅ Created new topic via GroupPlan: ${newTopicId} - Story: ${result.storyIdHash?.substring(0, 8)}`);
+            }
+            else {
+                // Fallback: Direct TopicGroupManager call
+                await this.nodeOneCore.topicGroupManager.createGroupTopic(topicName, newTopicId, participantsExcludingOwner);
+                console.log('[ChatPlan] ✅ Created new topic via TopicGroupManager:', newTopicId);
+            }
+            // Detect AI participants and register the new topic
+            let hasAI = false;
+            if (this.nodeOneCore.aiAssistantModel) {
+                for (const participantId of request.participantIds) {
+                    const isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
+                    if (isAI) {
+                        hasAI = true;
+                        const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
+                        if (modelId) {
+                            console.log('[ChatPlan] Detected AI participant, registering new topic:', modelId);
+                            this.nodeOneCore.aiAssistantModel.registerAITopic(newTopicId, modelId);
+                            // Trigger introduction message from AI in the NEW chat (fire and forget)
+                            this.nodeOneCore.aiAssistantModel.handleNewTopic(newTopicId).catch((error) => {
+                                console.error('[ChatPlan] Failed to generate AI introduction message:', error);
+                            });
+                        }
+                    }
+                }
+            }
+            console.log('[ChatPlan] ========== ADD PARTICIPANTS END ==========');
+            console.log('[ChatPlan] ✅ Result: Created NEW conversation:', newTopicId);
+            console.log('[ChatPlan] ✅ Original conversation remains unchanged:', request.conversationId);
             return {
                 success: true,
                 data: {
                     conversationId: request.conversationId,
-                    addedParticipants: request.participantIds
+                    addedParticipants: request.participantIds,
+                    newConversationId: newTopicId // Signal to UI that a new chat was created
                 }
             };
         }
