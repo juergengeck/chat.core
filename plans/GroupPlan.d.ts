@@ -30,6 +30,9 @@ export interface Demand {
     keywords: string[];
     trustLevel: 'me' | 'trusted' | 'group' | 'public';
     groupHash?: string;
+    credentialFilters: Array<{
+        type: string;
+    }>;
 }
 export interface Supply {
     domain: string;

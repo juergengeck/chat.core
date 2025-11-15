@@ -20,27 +20,30 @@ const PROFILE_RETRY_DELAY = 60000; // Don't retry for 60 seconds
 export async function createProfileAndSomeoneForPerson(personId, leuteModel, profileOptions = {}) {
     console.log(`[ContactCreation] 📝 Creating new contact for Person ${personId?.substring(0, 8)}...`);
     try {
-        // 1. Store PersonName and descriptors FIRST (must be stored before referencing)
-        const personDescriptionHashes = [];
+        // 1. Prepare PersonName and descriptors as objects (ProfileModel will store them)
+        const personDescriptions = [];
         if (profileOptions.displayName) {
-            console.log(`[ContactCreation] Storing PersonName: ${profileOptions.displayName}`);
-            const personNameHash = await storeUnversionedObject({
+            console.log(`[ContactCreation] Creating PersonName: ${profileOptions.displayName}`);
+            personDescriptions.push({
                 $type$: 'PersonName',
                 name: profileOptions.displayName
             });
-            personDescriptionHashes.push(personNameHash);
         }
-        // Store any additional descriptors
+        // Add any additional descriptors
         if (profileOptions.descriptors && Array.isArray(profileOptions.descriptors)) {
             for (const descriptor of profileOptions.descriptors) {
-                const descriptorHash = await storeUnversionedObject(descriptor);
-                personDescriptionHashes.push(descriptorHash);
+                // Skip descriptors with undefined $type$ (invalid objects)
+                if (!descriptor || !descriptor.$type$ || descriptor.$type$ === 'undefined') {
+                    console.warn('[ContactCreation] Skipping invalid descriptor:', descriptor);
+                    continue;
+                }
+                personDescriptions.push(descriptor);
             }
         }
-        // 2. Create Profile using ProfileModel API with stored hashes
+        // 2. Create Profile using ProfileModel API with descriptor objects
         console.log('[ContactCreation]   ├─ Creating Profile object...');
         const profile = await ProfileModel.constructWithNewProfile(ensureIdHash(personId), await leuteModel.myMainIdentity(), 'default', [], // communicationEndpoints
-        personDescriptionHashes // Hash references to stored PersonDescription objects
+        personDescriptions // Descriptor objects (ProfileModel will store them)
         );
         await profile.saveAndLoad();
         console.log(`[ContactCreation]   ├─ Profile saved: ${profile.idHash.toString().substring(0, 8)}`);

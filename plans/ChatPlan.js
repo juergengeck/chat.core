@@ -305,13 +305,28 @@ export class ChatPlan {
                 if (thinking) {
                     console.log(`[ChatPlan] 🧠 Message ${msg.id?.substring(0, 8)} has thinking (${thinking.length} chars)`);
                 }
+                // Transform attachments from SHA256Hash[] to { hash }[] for UI compatibility
+                // ONE.core stores attachments as plain hash strings, UI expects objects with .hash property
+                const rawAttachments = msg.data?.attachments || [];
+                const attachments = rawAttachments.map((att) => {
+                    // If already an object with hash property, pass through
+                    if (typeof att === 'object' && att.hash) {
+                        return att;
+                    }
+                    // If plain string (SHA256Hash), wrap in object
+                    if (typeof att === 'string') {
+                        return { hash: att };
+                    }
+                    // Unknown format - fail fast
+                    throw new Error(`Invalid attachment format: ${typeof att}`);
+                });
                 return {
                     id: msg.id,
                     content: msg.data?.text || msg.text || '', // Check both data.text and text (matches Electron)
                     sender,
                     senderName,
                     timestamp: msg.creationTime ? new Date(msg.creationTime).getTime() : Date.now(),
-                    attachments: msg.data?.attachments || [],
+                    attachments,
                     creationTime: msg.creationTime,
                     thinking, // Include thinking/reasoning trace (for DeepSeek R1, etc.)
                     isAI // Flag to identify AI messages
@@ -463,7 +478,9 @@ export class ChatPlan {
                 const name = topic.name;
                 console.log(`[ChatPlan] Processing topic: ${topicId} (${name})`);
                 // Get participants from topic group with enriched data (names)
+                // ALSO extract AI model info from participants (if any AI contact is found)
                 let participants = [];
+                let aiModelId;
                 try {
                     let groupIdHash = null;
                     if (this.nodeOneCore.topicGroupManager) {
@@ -505,14 +522,26 @@ export class ChatPlan {
                                                     }
                                                 }
                                                 else {
-                                                    // Check if it's an AI participant FIRST
-                                                    if (this.nodeOneCore.aiAssistantModel) {
+                                                    // Check if it's an AI participant by reading LLM objects from storage
+                                                    if (this.nodeOneCore.llmObjectManager) {
                                                         try {
-                                                            const isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
-                                                            if (isAI) {
-                                                                const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
-                                                                if (modelId) {
-                                                                    name = modelId; // Use model ID as name (e.g., "gpt-oss:20b")
+                                                            // Query LLM objects to find one with this personId
+                                                            const allLLMs = this.nodeOneCore.llmObjectManager.getAllLLMObjects();
+                                                            console.log(`[ChatPlan] 🔍 DEBUG: Checking ${allLLMs.length} LLM objects for participant ${participantId.substring(0, 8)}...`);
+                                                            for (const llm of allLLMs) {
+                                                                const llmData = llm;
+                                                                console.log(`[ChatPlan] 🔍 DEBUG: Checking LLM - personId: ${llmData.personId?.toString().substring(0, 8)}, modelId: ${llmData.modelId}`);
+                                                                if (llmData.personId && llmData.personId.toString() === participantId) {
+                                                                    // Found AI contact - use modelId from LLM object (from storage)
+                                                                    const modelId = llmData.modelId;
+                                                                    console.log(`[ChatPlan] 🔍 DEBUG: ✅ FOUND AI CONTACT! modelId:`, modelId);
+                                                                    if (modelId) {
+                                                                        name = modelId; // Use model ID as name (e.g., "gpt-oss:20b")
+                                                                        // CAPTURE the AI model ID for this conversation
+                                                                        aiModelId = modelId;
+                                                                        console.log(`[ChatPlan] 🔍 DEBUG: Set aiModelId to:`, aiModelId);
+                                                                        break;
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -596,20 +625,25 @@ export class ChatPlan {
                     // If we can't fetch messages, just continue without preview
                     console.warn(`[ChatPlan] Could not fetch last message for topic ${topicId}:`, error);
                 }
-                // Get AI model info if this is an AI topic
-                let aiModelId;
+                // Get AI model name from LLM manager (aiModelId was captured from participants above)
                 let modelName;
                 let isAITopic = false;
-                // Check if topic has an AI model registered
-                if (this.nodeOneCore.aiAssistantModel?.topicManager) {
-                    aiModelId = this.nodeOneCore.aiAssistantModel.topicManager.getModelIdForTopic(topicId);
-                    if (aiModelId) {
-                        isAITopic = true;
-                        // Get model name from LLM manager
-                        if (this.nodeOneCore.llmManager) {
-                            const modelInfo = this.nodeOneCore.llmManager.getModel(aiModelId);
-                            modelName = modelInfo?.name || aiModelId;
-                        }
+                if (aiModelId) {
+                    isAITopic = true;
+                    console.log(`[ChatPlan] 🔍 DEBUG: Topic ${topicId} has aiModelId:`, aiModelId);
+                    // Get model name from LLM manager
+                    if (this.nodeOneCore.llmManager) {
+                        console.log(`[ChatPlan] 🔍 DEBUG: llmManager exists, getting model info for:`, aiModelId);
+                        // Show all available models for debugging
+                        const availableModels = this.nodeOneCore.llmManager.getAvailableModels();
+                        console.log(`[ChatPlan] 🔍 DEBUG: Available models in llmManager:`, availableModels.map((m) => ({ id: m.id, name: m.name })));
+                        const modelInfo = this.nodeOneCore.llmManager.getModel(aiModelId);
+                        console.log(`[ChatPlan] 🔍 DEBUG: modelInfo result:`, modelInfo);
+                        modelName = modelInfo?.name || aiModelId;
+                        console.log(`[ChatPlan] 🔍 DEBUG: Final modelName:`, modelName);
+                    }
+                    else {
+                        console.warn(`[ChatPlan] ⚠️  llmManager not available for topic ${topicId}`);
                     }
                 }
                 return {

@@ -35,6 +35,7 @@ export interface Demand {
   keywords: string[];
   trustLevel: 'me' | 'trusted' | 'group' | 'public';
   groupHash?: string;
+  credentialFilters: Array<{ type: string }>;
 }
 
 export interface Supply {
@@ -351,7 +352,9 @@ export class GroupPlan {
         demand: {
           domain: 'conversation',
           keywords: ['topic', 'group', 'participants', 'access-control'],
-          trustLevel: 'me'
+          trustLevel: 'me',
+          credentialFilters: [],  // Required by recipe - no credential filtering needed
+          groupHash: undefined  // Optional - explicitly undefined (not null)
         },
         supply: {
           domain: 'conversation',
