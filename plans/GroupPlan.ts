@@ -137,14 +137,19 @@ export class GroupPlan {
   private topicGroupManager: TopicGroupManager;
   private nodeOneCore: any;
   private storyFactory?: StoryFactory;
+  private assemblyPlan?: any; // AssemblyPlan instance (optional)
+  private topicAssemblies: Map<string, string>; // topicId -> assemblyIdHash
 
   constructor(
     topicGroupManager: TopicGroupManager,
     nodeOneCore: any,
-    storageOrStoryFactory?: StorageFunctions | StoryFactory
+    storageOrStoryFactory?: StorageFunctions | StoryFactory,
+    assemblyPlan?: any
   ) {
     this.topicGroupManager = topicGroupManager;
     this.nodeOneCore = nodeOneCore;
+    this.assemblyPlan = assemblyPlan;
+    this.topicAssemblies = new Map();
 
     // Determine if we got StorageFunctions or StoryFactory
     if (storageOrStoryFactory) {

@@ -29,9 +29,13 @@ export class GroupPlan {
     topicGroupManager;
     nodeOneCore;
     storyFactory;
-    constructor(topicGroupManager, nodeOneCore, storageOrStoryFactory) {
+    assemblyPlan; // AssemblyPlan instance (optional)
+    topicAssemblies; // topicId -> assemblyIdHash
+    constructor(topicGroupManager, nodeOneCore, storageOrStoryFactory, assemblyPlan) {
         this.topicGroupManager = topicGroupManager;
         this.nodeOneCore = nodeOneCore;
+        this.assemblyPlan = assemblyPlan;
+        this.topicAssemblies = new Map();
         // Determine if we got StorageFunctions or StoryFactory
         if (storageOrStoryFactory) {
             if ('recordExecution' in storageOrStoryFactory) {

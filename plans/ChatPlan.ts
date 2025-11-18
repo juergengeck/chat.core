@@ -636,10 +636,16 @@ export class ChatPlan {
       console.error(`[ChatPlan] 🔍 BEFORE createGroup - participants.length: ${participants.length}`);
       console.error(`[ChatPlan] 🔍 BEFORE createGroup - participants:`, participants);
 
-      // Generate deterministic topic ID for the conversation
-      // Use Date.now() + random component to prevent burst collisions
-      const randomComponent = Math.random().toString(36).substring(2, 8);
-      const topicId = `group-${Date.now()}-${randomComponent}-${String(userId).substring(0, 8)}`;
+      // Content-addressed topic ID: Deterministic based on participants + owner
+      // Same participants → Same topic ID → Natural deduplication
+      const allParticipants = [userId, ...participants].sort();
+      // Use crypto.subtle.digest for deterministic hashing
+      const participantString = allParticipants.join(',');
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(participantString));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      const topicId = `group-${hashHex.substring(0, 24)}`;
+      console.log(`[ChatPlan] Content-addressed topic ID: ${topicId}`);
 
       // Create group using GroupPlan (creates Story/Assembly, delegates to TopicGroupManager)
       if (this.groupPlan) {
@@ -675,6 +681,62 @@ export class ChatPlan {
         this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topicId, true);
       }
 
+      // Enrich participants with names (same format as getConversations)
+      const enrichedParticipants = await Promise.all(participants.map(async (participantId) => {
+        let name = 'Unknown';
+        let isAI = false;
+        let modelId: string | undefined;
+
+        if (this.nodeOneCore.leuteModel) {
+          try {
+            // Check if it's current user
+            if (participantId === this.nodeOneCore.ownerId) {
+              const me: any = await this.nodeOneCore.leuteModel.me();
+              if (me) {
+                const profile: any = await me.mainProfile();
+                if (profile) {
+                  const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                  name = personName?.name || profile.name || 'You';
+                }
+              }
+            } else {
+              // Check if AI participant
+              if (this.nodeOneCore.aiAssistantModel?.isAIPerson(participantId)) {
+                isAI = true;
+                modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
+                if (modelId && this.nodeOneCore.llmManager) {
+                  const modelInfo = await this.nodeOneCore.llmManager.getModel(modelId);
+                  name = modelInfo?.name || modelId;
+                }
+              } else {
+                // Other contact
+                const others = await this.nodeOneCore.leuteModel.others();
+                for (const someone of others) {
+                  const identity = await someone.mainIdentity();
+                  if (identity === participantId) {
+                    const profile: any = await someone.mainProfile();
+                    if (profile) {
+                      const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                      name = personName?.name || profile.name || 'Contact';
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.warn(`[ChatPlan] Failed to get name for participant ${String(participantId).substring(0, 8)}:`, error);
+          }
+        }
+
+        return {
+          id: String(participantId),
+          name,
+          isAI,
+          modelId
+        };
+      }));
+
       // Detect AI participants and register topic automatically
       console.error(`[ChatPlan] createConversation checking ${participants.length} participants for AI:`, participants);
       if (this.nodeOneCore.aiAssistantModel) {
@@ -684,7 +746,7 @@ export class ChatPlan {
             if (this.nodeOneCore.aiAssistantModel.isAIPerson(participantId)) {
               const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
               if (modelId) {
-                this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, modelId);
+                this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, participantId);
                 console.error(`[ChatPlan] Detected AI participant ${participantId.substring(0, 8)} with model: ${modelId}`);
 
                 // Default chats (hi/lama) are handled by AITopicManager callback
@@ -711,7 +773,7 @@ export class ChatPlan {
           id: topicId,
           name,
           type,
-          participants: [String(userId), ...participants],
+          participants: enrichedParticipants,  // Enriched with names to match getConversations format
           created: Date.now()
         }
       };
@@ -772,9 +834,21 @@ export class ChatPlan {
                   const participantIds = Array.from(hashGroup.person).map(id => String(id));
 
                   if (participantIds.length > 0) {
-                // Enrich each participant with name from Leute model
+                // Enrich each participant with name and avatar color from Leute model
                 participants = await Promise.all(participantIds.map(async (participantId) => {
                     let name = 'Unknown';
+                    let color: string | undefined;
+                    let isAI = false;
+
+                    // Load avatar color from AvatarPreference storage
+                    try {
+                      const result = await getObjectByIdHash(participantId as any);
+                      if (result && result.obj && result.obj.$type$ === 'AvatarPreference') {
+                        color = result.obj.color;
+                      }
+                    } catch (e) {
+                      // No avatar preference exists, color will be undefined
+                    }
 
                     // Get name from Leute model for ALL participants
                     if (this.nodeOneCore.leuteModel) {
@@ -793,6 +867,14 @@ export class ChatPlan {
                           // Check if it's an AI participant by reading LLM objects from storage
                           if (this.nodeOneCore.llmObjectManager) {
                             try {
+                              // CRITICAL: Ensure LLMObjectManager is initialized before querying
+                              // Defensive check to prevent silent failures if initialization order changes
+                              if (!(this.nodeOneCore.llmObjectManager as any).initialized) {
+                                console.warn(`[ChatPlan] ⚠️  LLMObjectManager not initialized - initializing now...`);
+                                await this.nodeOneCore.llmObjectManager.initialize();
+                                console.log(`[ChatPlan] ✅ LLMObjectManager initialized (late init)`);
+                              }
+
                               // Query LLM objects to find one with this personId
                               const allLLMs = this.nodeOneCore.llmObjectManager.getAllLLMObjects();
                               console.log(`[ChatPlan] 🔍 DEBUG: Checking ${allLLMs.length} LLM objects for participant ${participantId.substring(0, 8)}...`);
@@ -805,6 +887,7 @@ export class ChatPlan {
                                   console.log(`[ChatPlan] 🔍 DEBUG: ✅ FOUND AI CONTACT! modelId:`, modelId);
                                   if (modelId) {
                                     name = modelId; // Use model ID as name (e.g., "gpt-oss:20b")
+                                    isAI = true; // Mark as AI participant
                                     // CAPTURE the AI model ID for this conversation
                                     aiModelId = modelId;
                                     console.log(`[ChatPlan] 🔍 DEBUG: Set aiModelId to:`, aiModelId);
@@ -844,7 +927,9 @@ export class ChatPlan {
 
                     return {
                       id: participantId,
-                      name
+                      name,
+                      isAI,
+                      color
                     };
                   }));
                 }
@@ -895,25 +980,29 @@ export class ChatPlan {
             console.warn(`[ChatPlan] Could not fetch last message for topic ${topicId}:`, error);
           }
 
-          // Get AI model name from LLM manager (aiModelId was captured from participants above)
+          // Check if this is an AI topic using AITopicManager (authoritative source)
           let modelName: string | undefined;
           let isAITopic = false;
 
-          if (aiModelId) {
-            isAITopic = true;
-            console.log(`[ChatPlan] 🔍 DEBUG: Topic ${topicId} has aiModelId:`, aiModelId);
+          // AUTHORITATIVE CHECK: Use topicManager to determine if this is an AI topic
+          if (this.nodeOneCore.aiAssistantModel?.topicManager?.isAITopic) {
+            isAITopic = this.nodeOneCore.aiAssistantModel.topicManager.isAITopic(topicId);
+          }
+
+          // Get AI model ID if it's an AI topic
+          if (isAITopic) {
+            // Use aiModelId from participants if found, otherwise get from topicManager
+            if (!aiModelId && this.nodeOneCore.aiAssistantModel?.topicManager?.getAIPersonForTopic) {
+              const aiPersonId = this.nodeOneCore.aiAssistantModel.topicManager.getAIPersonForTopic(topicId);
+              if (aiPersonId && this.nodeOneCore.aiAssistantModel?.aiManager?.getLLMId) {
+                aiModelId = await this.nodeOneCore.aiAssistantModel.aiManager.getLLMId(aiPersonId);
+              }
+            }
+
             // Get model name from LLM manager
-            if (this.nodeOneCore.llmManager) {
-              console.log(`[ChatPlan] 🔍 DEBUG: llmManager exists, getting model info for:`, aiModelId);
-              // Show all available models for debugging
-              const availableModels = this.nodeOneCore.llmManager.getAvailableModels();
-              console.log(`[ChatPlan] 🔍 DEBUG: Available models in llmManager:`, availableModels.map((m: any) => ({ id: m.id, name: m.name })));
-              const modelInfo = this.nodeOneCore.llmManager.getModel(aiModelId);
-              console.log(`[ChatPlan] 🔍 DEBUG: modelInfo result:`, modelInfo);
+            if (aiModelId && this.nodeOneCore.llmManager) {
+              const modelInfo = await this.nodeOneCore.llmManager.getModel(aiModelId);
               modelName = modelInfo?.name || aiModelId;
-              console.log(`[ChatPlan] 🔍 DEBUG: Final modelName:`, modelName);
-            } else {
-              console.warn(`[ChatPlan] ⚠️  llmManager not available for topic ${topicId}`);
             }
           }
 
@@ -1151,11 +1240,33 @@ export class ChatPlan {
       const allParticipants = [...new Set([...currentParticipants, ...request.participantIds])];
       console.log('[ChatPlan] New participant list:', allParticipants.map((p: string) => p.substring(0, 8)));
 
-      // Generate new topic ID for the new group
-      // Use timestamp + hash of sorted participant IDs for determinism
-      const participantHash = allParticipants.sort().join('').substring(0, 16);
-      const newTopicId = `group-${Date.now()}-${participantHash}`;
-      console.log('[ChatPlan] New topic ID:', newTopicId);
+      // Content-addressed topic ID: Deterministic based on participant set
+      // Same participants → Same topic ID → Natural deduplication
+      const sortedParticipants = [...allParticipants].sort();
+      // Use crypto.subtle.digest for deterministic hashing
+      const participantString = sortedParticipants.join(',');
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(participantString));
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+      const newTopicId = `group-${hashHex.substring(0, 24)}`;
+      console.log('[ChatPlan] Content-addressed topic ID:', newTopicId);
+
+      // Check if topic already exists (CAS deduplication)
+      const existingTopic = await this.nodeOneCore.topicModel.topics.queryById(newTopicId);
+      if (existingTopic) {
+        console.log('[ChatPlan] ✅ Topic with these participants already exists - using existing conversation');
+        console.log('[ChatPlan] ========== ADD PARTICIPANTS END (content-addressed match) ==========');
+        return {
+          success: true,
+          data: {
+            conversationId: request.conversationId,
+            addedParticipants: request.participantIds,
+            newConversationId: newTopicId  // Switch to existing conversation
+          }
+        };
+      }
+
+      console.log('[ChatPlan] Creating new conversation with', allParticipants.length, 'participants');
 
       // Get original topic name
       const originalTopic = await this.nodeOneCore.topicModel.topics.queryById(request.conversationId);
@@ -1189,22 +1300,26 @@ export class ChatPlan {
       }
 
       // Detect AI participants and register the new topic
+      // CRITICAL: Check ALL participants (existing + new), not just request.participantIds
       let hasAI = false;
       if (this.nodeOneCore.aiAssistantModel) {
-        for (const participantId of request.participantIds) {
+        for (const participantId of allParticipants) {
           const isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
           if (isAI) {
             hasAI = true;
             const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
-            if (modelId) {
-              console.log('[ChatPlan] Detected AI participant, registering new topic:', modelId);
-              this.nodeOneCore.aiAssistantModel.registerAITopic(newTopicId, modelId);
+            console.log('[ChatPlan] Detected AI participant in new conversation - PersonId:', participantId.substring(0, 8), 'ModelId:', modelId);
 
-              // Trigger introduction message from AI in the NEW chat (fire and forget)
-              this.nodeOneCore.aiAssistantModel.handleNewTopic(newTopicId).catch((error: Error) => {
-                console.error('[ChatPlan] Failed to generate AI introduction message:', error);
-              });
-            }
+            // Register the topic with the AI Person's ID hash (not the model ID string)
+            this.nodeOneCore.aiAssistantModel.registerAITopic(newTopicId, participantId as any);
+
+            // Trigger introduction message from AI in the NEW chat (fire and forget)
+            this.nodeOneCore.aiAssistantModel.handleNewTopic(newTopicId).catch((error: Error) => {
+              console.error('[ChatPlan] Failed to generate AI introduction message:', error);
+            });
+
+            // Only register the first AI participant (one AI per topic)
+            break;
           }
         }
       }

@@ -445,24 +445,24 @@ export class TopicGroupManager {
         console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for HashGroup ${String(hashGroupHash).substring(0, 8)}`);
         console.log(`[TopicGroupManager] ✅ Signature: ${String(certResult.signature.hash).substring(0, 8)}, License: ${String(certResult.license.hash).substring(0, 8)}`);
         // PROTOCOL: Share certificate objects P2P with each participant BEFORE sharing the Group
-        console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing certificates P2P with ${participants.length} participants`);
+        console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing certificates P2P with ${allParticipants.length} participants`);
         // Step 1: Share certificates FIRST (P2P to each participant)
         await this.storageDeps.createAccess([
             {
                 object: certResult.certificate.hash,
-                person: participants,
+                person: allParticipants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 object: certResult.signature.hash,
-                person: participants,
+                person: allParticipants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 object: certResult.license.hash,
-                person: participants,
+                person: allParticipants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             }
@@ -475,13 +475,13 @@ export class TopicGroupManager {
         await this.storageDeps.createAccess([
             {
                 id: storedHashGroup.hash,
-                person: participants,
+                person: allParticipants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             },
             {
                 id: groupIdHash,
-                person: participants,
+                person: allParticipants,
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
             }
@@ -506,10 +506,10 @@ export class TopicGroupManager {
         // Share the topic with the group
         await this.oneCore.topicModel.addGroupToTopic(groupIdHash, topic);
         console.log(`[TopicGroupManager] Added group ${String(groupIdHash).substring(0, 8)} access to topic ${topicId}`);
-        // Create channels for ALL participants in participants
-        // participants contains all LOCAL participants (owner + AI contacts, etc.)
+        // Create channels for ALL participants in allParticipants
+        // allParticipants contains all LOCAL participants (owner + AI contacts, etc.)
         // Remote participants will create their own channels when they receive the Group via CHUM
-        for (const participantId of participants) {
+        for (const participantId of allParticipants) {
             if (participantId && this.oneCore.channelManager) {
                 try {
                     // createChannel is idempotent - if channel exists, it's a no-op
@@ -535,7 +535,7 @@ export class TopicGroupManager {
             }
         }
         console.log(`[TopicGroupManager] Topic ${topicId} created with group ${String(groupIdHash).substring(0, 8)}`);
-        console.log(`[TopicGroupManager] Created channels for all ${participants.length} LOCAL participants`);
+        console.log(`[TopicGroupManager] Created channels for all ${allParticipants.length} LOCAL participants`);
         // IMPORTANT: Architecture:
         // - ONE topic ID for the conversation
         // - MULTIPLE channels (one per participant) with the SAME topic ID

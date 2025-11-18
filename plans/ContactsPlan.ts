@@ -121,9 +121,11 @@ export class ContactsPlan {
         return { success: false, error: 'Leute model not initialized' };
       }
 
-      // Get human contacts - these are Someone objects that need to be transformed
-      const someoneObjects = await this.nodeOneCore.leuteModel.others();
-      console.log(`[ContactsPlan] Found ${someoneObjects.length} Someone objects`);
+      // Get all contacts including owner - these are Someone objects that need to be transformed
+      const me = await this.nodeOneCore.leuteModel.me();
+      const others = await this.nodeOneCore.leuteModel.others();
+      const someoneObjects = [me, ...others];
+      console.log(`[ContactsPlan] Found ${someoneObjects.length} Someone objects (1 owner + ${others.length} others)`);
       const allContacts: Contact[] = [];
 
       // Track processed Person IDs to skip duplicates

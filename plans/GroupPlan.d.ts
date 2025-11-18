@@ -118,7 +118,9 @@ export declare class GroupPlan {
     private topicGroupManager;
     private nodeOneCore;
     private storyFactory?;
-    constructor(topicGroupManager: TopicGroupManager, nodeOneCore: any, storageOrStoryFactory?: StorageFunctions | StoryFactory);
+    private assemblyPlan?;
+    private topicAssemblies;
+    constructor(topicGroupManager: TopicGroupManager, nodeOneCore: any, storageOrStoryFactory?: StorageFunctions | StoryFactory, assemblyPlan?: any);
     /**
      * Create StoryFactory with AssemblyPlan (internal wiring)
      */
