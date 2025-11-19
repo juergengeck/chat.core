@@ -400,14 +400,31 @@ export class ChatPlan {
 
       // Send message with or without attachments
       if (request.attachments && request.attachments.length > 0) {
-        const attachmentHashes = request.attachments.map(att => {
-          if (typeof att === 'string') return att;
-          return att.hash || att.id;
-        }).filter(Boolean);
+        // Transform attachments to the format expected by sendMessageWithAttachmentAsHash
+        const attachmentObjects = request.attachments.map(att => {
+          // If it's already an object with hash and type, use it
+          if (typeof att === 'object' && att.hash && att.type) {
+            return {
+              hash: att.hash,
+              type: att.type,
+              metadata: att.mimeType || att.name || att.size ? {
+                name: att.name,
+                mimeType: att.mimeType,
+                size: att.size
+              } : undefined
+            };
+          }
+          // Legacy: If it's a string, assume it's a BLOB hash
+          if (typeof att === 'string') {
+            return { hash: att, type: 'BLOB' };
+          }
+          // Fallback: Extract hash and assume BLOB
+          return { hash: att.hash || att.id, type: 'BLOB' };
+        }).filter(att => att.hash); // Filter out any attachments without hashes
 
         await topicRoom.sendMessageWithAttachmentAsHash(
           request.content || '',
-          attachmentHashes,
+          attachmentObjects,
           undefined,
           channelOwner
         );
@@ -544,21 +561,12 @@ export class ChatPlan {
           console.log(`[ChatPlan] 🧠 Message ${msg.id?.substring(0, 8)} has thinking (${thinking.length} chars)`);
         }
 
-        // Transform attachments from SHA256Hash[] to { hash }[] for UI compatibility
-        // ONE.core stores attachments as plain hash strings, UI expects objects with .hash property
+        // Attachments are stored as references to ONE objects (BLOB, Certificate, CLOB, etc.)
+        // Transform to UI format: array of hashes -> array of {hash} objects
         const rawAttachments = msg.data?.attachments || [];
-        const attachments = rawAttachments.map((att: any) => {
-          // If already an object with hash property, pass through
-          if (typeof att === 'object' && att.hash) {
-            return att;
-          }
-          // If plain string (SHA256Hash), wrap in object
-          if (typeof att === 'string') {
-            return { hash: att };
-          }
-          // Unknown format - fail fast
-          throw new Error(`Invalid attachment format: ${typeof att}`);
-        });
+        const attachments = rawAttachments.map((att: SHA256Hash) => ({
+          hash: att as string
+        }));
 
         return {
           id: msg.id,
