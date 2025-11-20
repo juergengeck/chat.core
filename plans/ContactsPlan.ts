@@ -17,7 +17,7 @@ import {
 } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { ensureIdHash, SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { StoryFactory } from '@refinio/refinio.api/dist/plan-system-index.js';
+import type { StoryFactory } from '@refinio/refinio.api/plan-system';
 
 export interface Contact {
   id: string;

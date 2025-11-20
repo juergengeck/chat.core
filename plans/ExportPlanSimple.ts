@@ -8,8 +8,8 @@
  * Uses only ONE.core dependency via constructor injection.
  */
 
-import type { PlanContext } from '@refinio/api/plan-system-index.js';
-import { NotFoundError } from '@refinio/api/plan-system-index.js';
+import type { PlanContext } from '@refinio/refinio.api/plan-system';
+import { NotFoundError } from '@refinio/refinio.api/plan-system';
 
 /**
  * Request/Response types (will be defined with Zod schemas in operation-types.ts)

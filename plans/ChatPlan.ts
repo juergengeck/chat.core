@@ -851,8 +851,8 @@ export class ChatPlan {
                     // Load avatar color from AvatarPreference storage
                     try {
                       const result = await getObjectByIdHash(participantId as any);
-                      if (result && result.obj && result.obj.$type$ === 'AvatarPreference') {
-                        color = result.obj.color;
+                      if (result && result.obj && typeof result.obj === 'object' && '$type$' in result.obj && result.obj.$type$ === 'AvatarPreference') {
+                        color = (result.obj as any).color;
                       }
                     } catch (e) {
                       // No avatar preference exists, color will be undefined
