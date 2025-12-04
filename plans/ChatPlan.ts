@@ -577,7 +577,8 @@ export class ChatPlan {
           attachments,
           creationTime: msg.creationTime,
           thinking,  // Include thinking/reasoning trace (for DeepSeek R1, etc.)
-          isAI  // Flag to identify AI messages
+          isAI,  // Flag to identify AI messages
+          isOwn: sender?.toString() === this.nodeOneCore.ownerId?.toString()  // Ownership flag for UI alignment
         };
       }));
 

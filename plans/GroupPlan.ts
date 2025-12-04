@@ -26,8 +26,8 @@ export interface ExecutionContext {
   instanceVersion: string;
   demand?: Demand;
   supply?: Supply;
-  matchScore?: number;
   metadata?: Map<string, string>;
+  matchScore?: number;
 }
 
 export interface Demand {
@@ -46,9 +46,12 @@ export interface Supply {
   verifiableCredentials?: any[];
 }
 
+/**
+ * Result of recordExecution - wraps operation result with Story/Assembly tracking.
+ * On error, recordExecution throws - no error property needed.
+ */
 export interface ExecutionResult<T> {
-  success: boolean;
-  result?: T;
+  result: T;
   story?: {
     idHash: string;
     hash: string;
@@ -57,7 +60,6 @@ export interface ExecutionResult<T> {
     idHash: string;
     hash: string;
   };
-  error?: string;
 }
 
 export interface StoryFactory {
@@ -180,7 +182,6 @@ export class GroupPlan {
           instanceVersion: params.instanceVersion,
           outcome: params.outcome,
           success: params.success,
-          matchScore: params.matchScore,
           metadata: params.metadata,
           actor: params.actor,
           created: Date.now(),
@@ -268,7 +269,6 @@ export class GroupPlan {
           }
 
           return {
-            success: true,
             result,
             story: {
               hash: storyResult.hash as string,
@@ -404,7 +404,7 @@ export class GroupPlan {
 
       return {
         success: true,
-        groupIdHash: result.result?.groupIdHash,
+        groupIdHash: result.result.groupIdHash,
         assemblyIdHash: result.assembly?.idHash,
         storyIdHash: result.story?.idHash
       };

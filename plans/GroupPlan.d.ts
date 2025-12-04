@@ -22,8 +22,8 @@ export interface ExecutionContext {
     instanceVersion: string;
     demand?: Demand;
     supply?: Supply;
-    matchScore?: number;
     metadata?: Map<string, string>;
+    matchScore?: number;
 }
 export interface Demand {
     domain: string;
@@ -41,9 +41,12 @@ export interface Supply {
     ownerId: string;
     verifiableCredentials?: any[];
 }
+/**
+ * Result of recordExecution - wraps operation result with Story/Assembly tracking.
+ * On error, recordExecution throws - no error property needed.
+ */
 export interface ExecutionResult<T> {
-    success: boolean;
-    result?: T;
+    result: T;
     story?: {
         idHash: string;
         hash: string;
@@ -52,7 +55,6 @@ export interface ExecutionResult<T> {
         idHash: string;
         hash: string;
     };
-    error?: string;
 }
 export interface StoryFactory {
     recordExecution<T>(context: ExecutionContext, operation: () => Promise<T>): Promise<ExecutionResult<T>>;

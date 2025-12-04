@@ -17,12 +17,18 @@ import {
 } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { ensureIdHash, SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { StoryFactory } from '@refinio/refinio.api/plan-system';
+// StoryFactory type (defined locally to avoid moduleResolution issues)
+interface StoryFactory {
+  recordExecution(context: any, operation: () => Promise<any>): Promise<{ result: any; storyId?: any; assemblyId?: any }>;
+  registerPlan(params: any): Promise<any>;
+}
 
 export interface Contact {
   id: string;
   personId: string;
   name: string;
+  email?: string;
+  avatarBlobHash?: string;
   isAI: boolean;
   modelId?: string;
   canMessage: boolean;
@@ -153,7 +159,7 @@ export class ContactsPlan {
           }
           processedPersonIds.add(personId);
 
-          // Get profile to extract display name from PersonName (with timeout)
+          // Get profile to extract display name, email, and avatar (with timeout)
           const profile: any = await this.withTimeout(
             someone.mainProfile(),
             2000,
@@ -162,11 +168,44 @@ export class ContactsPlan {
           );
 
           let displayName: string = '';
+          let email: string | undefined;
+          let avatarBlobHash: string | undefined;
 
-          if (profile?.personDescriptions && Array.isArray(profile.personDescriptions)) {
-            const nameDesc = profile.personDescriptions.find((d: any) => d.$type$ === 'PersonName');
-            if (nameDesc && 'name' in nameDesc) {
-              displayName = nameDesc.name;
+          if (profile) {
+            // Use ProfileModel.descriptionsOfType() which properly resolves hash references
+            try {
+              const personNames = profile.descriptionsOfType?.('PersonName');
+              if (personNames && personNames.length > 0) {
+                displayName = (personNames[0] as any).name || '';
+              }
+            } catch (e) {
+              // Fallback: try raw personDescriptions array
+              if (profile.personDescriptions && Array.isArray(profile.personDescriptions)) {
+                const nameDesc = profile.personDescriptions.find((d: any) => d.$type$ === 'PersonName');
+                if (nameDesc && 'name' in nameDesc) {
+                  displayName = nameDesc.name;
+                }
+              }
+            }
+
+            // Extract email from Email description
+            try {
+              const emails = profile.descriptionsOfType?.('Email');
+              if (emails && emails.length > 0) {
+                email = (emails[0] as any).email || '';
+              }
+            } catch (e) {
+              // Email not found
+            }
+
+            // Extract avatar blob hash from ProfileImage description
+            try {
+              const profileImages = profile.descriptionsOfType?.('ProfileImage');
+              if (profileImages && profileImages.length > 0) {
+                avatarBlobHash = (profileImages[profileImages.length - 1] as any).image;
+              }
+            } catch (e) {
+              // Avatar not found
             }
           }
 
@@ -202,6 +241,8 @@ export class ContactsPlan {
             id: personId,
             personId: personId,
             name: displayName,
+            email,
+            avatarBlobHash,
             isAI: isAI,
             modelId: modelId,
             canMessage: true,
@@ -407,7 +448,7 @@ export class ContactsPlan {
       try {
         const result = await this.storyFactory.recordExecution(
           {
-            title: 'Add contact',
+            title: `Contact "${personInfo.name}" added`,
             description: `Creating contact: ${personInfo.name} (${personInfo.email})`,
             planId: ContactsPlan.planId,
             owner: userId || 'unknown',
@@ -618,7 +659,7 @@ export class ContactsPlan {
       try {
         const result = await this.storyFactory.recordExecution(
           {
-            title: 'Create group',
+            title: `Group "${name}" created`,
             description: `Creating group: ${name} with ${memberIds?.length || 0} members`,
             planId: ContactsPlan.planId,
             owner: userId || 'unknown',
@@ -862,6 +903,324 @@ export class ContactsPlan {
         error: (error as Error).message
       };
     }
+  }
+
+  // ===== Profile Management Methods =====
+
+  /**
+   * Get all profiles for a Someone contact
+   *
+   * Uses LeuteModel.getSomeone() to find the Someone, then
+   * SomeoneModel.profiles() to get all ProfileModel instances.
+   */
+  async getProfilesForSomeone(request: { personId: string }): Promise<{ success: boolean; profiles?: any[]; error?: string }> {
+    try {
+      if (!this.nodeOneCore.leuteModel) {
+        return { success: false, error: 'Leute model not initialized' };
+      }
+
+      const personId = request.personId as SHA256IdHash<Person>;
+      const someone = await this.nodeOneCore.leuteModel.getSomeone(personId);
+
+      if (!someone) {
+        return { success: false, error: 'Contact not found' };
+      }
+
+      // Get main profile for comparison
+      const mainProfile = await someone.mainProfile();
+      const mainProfileIdHash = mainProfile?.idHash;
+
+      // Get all profiles - returns Promise<ProfileModel[]>, not async iterator
+      const profileModels = await someone.profiles();
+      const profiles: any[] = [];
+
+      for (const profile of profileModels) {
+        // Extract PersonName from descriptions
+        let name = '';
+        let email = '';
+        let avatarBlobHash: string | undefined;
+
+        try {
+          const personNames = profile.descriptionsOfType('PersonName');
+          if (personNames && personNames.length > 0) {
+            name = (personNames[0] as any).name || '';
+          }
+        } catch (e) {
+          // PersonName not found
+        }
+
+        // Extract email from Email description
+        try {
+          const emails = profile.descriptionsOfType('Email');
+          if (emails && emails.length > 0) {
+            email = (emails[0] as any).email || '';
+          }
+        } catch (e) {
+          // Email not found
+        }
+
+        // Extract avatar blob hash from ProfileImage description
+        try {
+          const profileImages = profile.descriptionsOfType('ProfileImage');
+          if (profileImages && profileImages.length > 0) {
+            avatarBlobHash = (profileImages[profileImages.length - 1] as any).image;
+          }
+        } catch (e) {
+          // Avatar not found
+        }
+
+        profiles.push({
+          profileId: profile.profileId,
+          profileIdHash: profile.idHash,
+          personId: request.personId,
+          name,
+          email,
+          avatarBlobHash,
+          isMainProfile: profile.idHash === mainProfileIdHash
+        });
+      }
+
+      return { success: true, profiles };
+    } catch (error) {
+      console.error('[ContactsPlan] Failed to get profiles for Someone:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Get profile for a contact (main profile)
+   */
+  async getProfile(request: { personId: string }): Promise<{ success: boolean; profile?: any; error?: string }> {
+    try {
+      if (!this.nodeOneCore.leuteModel) {
+        return { success: false, error: 'Leute model not initialized' };
+      }
+
+      const personId = request.personId as SHA256IdHash<Person>;
+      const someone = await this.nodeOneCore.leuteModel.getSomeone(personId);
+
+      if (!someone) {
+        return { success: false, error: 'Contact not found' };
+      }
+
+      const profile = await someone.mainProfile();
+      if (!profile) {
+        return { success: false, error: 'Profile not found' };
+      }
+
+      // Extract name from PersonName description
+      let name = '';
+      try {
+        const personNames = profile.descriptionsOfType('PersonName');
+        if (personNames && personNames.length > 0) {
+          name = (personNames[0] as any).name || '';
+        }
+      } catch (e) {
+        // PersonName not found
+      }
+
+      // Check if this is the owner
+      const me = await this.nodeOneCore.leuteModel.me();
+      const myPersonId = await me.mainIdentity();
+      const isOwner = personId === myPersonId;
+
+      return {
+        success: true,
+        profile: {
+          profileId: profile.profileId,
+          profileIdHash: profile.idHash,
+          personId,
+          name,
+          isOwner,
+          isMainProfile: true
+        }
+      };
+    } catch (error) {
+      console.error('[ContactsPlan] Failed to get profile:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Update profile for a contact
+   */
+  async updateProfile(request: {
+    personId: string;
+    name?: string;
+    email?: string;
+    phone?: string;
+    street?: string;
+    city?: string;
+    state?: string;
+    postalCode?: string;
+    country?: string;
+    website?: string;
+    birthday?: string;
+    jobTitle?: string;
+    company?: string;
+    notes?: string;
+    avatarBlobHash?: string;
+  }): Promise<{ success: boolean; error?: string }> {
+    try {
+      if (!this.nodeOneCore.leuteModel) {
+        return { success: false, error: 'Leute model not initialized' };
+      }
+
+      const personId = request.personId as SHA256IdHash<Person>;
+      const someone = await this.nodeOneCore.leuteModel.getSomeone(personId);
+
+      if (!someone) {
+        return { success: false, error: 'Contact not found' };
+      }
+
+      const profile = await someone.mainProfile();
+      if (!profile) {
+        return { success: false, error: 'Profile not found' };
+      }
+
+      let needsSave = false;
+
+      // Ensure personDescriptions array exists
+      if (!profile.personDescriptions) {
+        profile.personDescriptions = [];
+      }
+
+      // Update name if provided - direct array manipulation pattern from LeuteApi
+      if (request.name && request.name.trim()) {
+        // Remove existing PersonName descriptions
+        profile.personDescriptions = profile.personDescriptions.filter(
+          (desc: any) => desc.$type$ !== 'PersonName'
+        );
+        // Add new PersonName
+        profile.personDescriptions.push({
+          $type$: 'PersonName' as const,
+          name: request.name.trim()
+        });
+        needsSave = true;
+      }
+
+      // Update email if provided
+      if (request.email !== undefined) {
+        // Remove existing Email descriptions
+        profile.personDescriptions = profile.personDescriptions.filter(
+          (desc: any) => desc.$type$ !== 'Email'
+        );
+        // Add new Email if not empty
+        if (request.email.trim()) {
+          profile.personDescriptions.push({
+            $type$: 'Email' as const,
+            email: request.email.trim()
+          });
+        }
+        needsSave = true;
+      }
+
+      // Update avatar if provided - save as ProfileImage description
+      if (request.avatarBlobHash !== undefined) {
+        // Remove existing ProfileImage descriptions
+        profile.personDescriptions = profile.personDescriptions.filter(
+          (desc: any) => desc.$type$ !== 'ProfileImage'
+        );
+        // Add new ProfileImage if not empty
+        if (request.avatarBlobHash) {
+          profile.personDescriptions.push({
+            $type$: 'ProfileImage' as const,
+            image: request.avatarBlobHash
+          });
+        }
+        needsSave = true;
+      }
+
+      if (needsSave) {
+        await profile.saveAndLoad();
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('[ContactsPlan] Failed to update profile:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Upload avatar image and return blob hash
+   */
+  async uploadAvatar(request: { dataUrl: string }): Promise<{ success: boolean; blobHash?: string; error?: string }> {
+    try {
+      const base64Data = request.dataUrl.split(',')[1];
+      if (!base64Data) {
+        return { success: false, error: 'Invalid data URL' };
+      }
+
+      const binaryString = atob(base64Data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const { storeArrayBufferAsBlob } = await import('@refinio/one.core/lib/storage-blob.js');
+      const result = await storeArrayBufferAsBlob(bytes.buffer);
+
+      return { success: true, blobHash: result.hash };
+    } catch (error) {
+      console.error('[ContactsPlan] Failed to upload avatar:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Get avatar as data URL from blob hash
+   */
+  async getAvatarDataUrl(request: { blobHash: string }): Promise<{ success: boolean; dataUrl?: string; error?: string }> {
+    try {
+      const { readBlobAsArrayBuffer } = await import('@refinio/one.core/lib/storage-blob.js');
+
+      const arrayBuffer = await readBlobAsArrayBuffer(request.blobHash as any);
+      if (!arrayBuffer) {
+        return { success: false, error: 'Blob not found' };
+      }
+
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64 = btoa(binary);
+
+      // Detect mime type
+      let mimeType = 'image/png';
+      if (bytes[0] === 0xFF && bytes[1] === 0xD8) {
+        mimeType = 'image/jpeg';
+      } else if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) {
+        mimeType = 'image/gif';
+      }
+
+      return { success: true, dataUrl: `data:${mimeType};base64,${base64}` };
+    } catch (error) {
+      console.error('[ContactsPlan] Failed to get avatar data URL:', error);
+      return { success: false, error: (error as Error).message };
+    }
+  }
+
+  /**
+   * Get lama avatar config for a person (stub - not yet implemented)
+   */
+  async getLamaAvatarConfig(request: { personId: string; name?: string }): Promise<{ success: boolean; lamaConfig?: any; error?: string }> {
+    // TODO: Implement when AvatarPreference recipe supports lamaConfig
+    return { success: true, lamaConfig: null };
+  }
+
+  /**
+   * Save lama avatar config for a person (stub - not yet implemented)
+   */
+  async saveLamaAvatarConfig(request: {
+    personId: string;
+    name?: string;
+    lamaConfig: any;
+  }): Promise<{ success: boolean; generation?: number; error?: string }> {
+    // TODO: Implement when AvatarPreference recipe supports lamaConfig
+    console.log('[ContactsPlan] Saving lama avatar config for:', request.personId);
+    return { success: true, generation: 1 };
   }
 
 }

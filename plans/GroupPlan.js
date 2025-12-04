@@ -65,7 +65,6 @@ export class GroupPlan {
                     instanceVersion: params.instanceVersion,
                     outcome: params.outcome,
                     success: params.success,
-                    matchScore: params.matchScore,
                     metadata: params.metadata,
                     actor: params.actor,
                     created: Date.now(),
@@ -142,7 +141,6 @@ export class GroupPlan {
                         });
                     }
                     return {
-                        success: true,
                         result,
                         story: {
                             hash: storyResult.hash,
@@ -256,7 +254,7 @@ export class GroupPlan {
             });
             return {
                 success: true,
-                groupIdHash: result.result?.groupIdHash,
+                groupIdHash: result.result.groupIdHash,
                 assemblyIdHash: result.assembly?.idHash,
                 storyIdHash: result.story?.idHash
             };

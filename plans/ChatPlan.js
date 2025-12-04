@@ -336,7 +336,8 @@ export class ChatPlan {
                     attachments,
                     creationTime: msg.creationTime,
                     thinking, // Include thinking/reasoning trace (for DeepSeek R1, etc.)
-                    isAI // Flag to identify AI messages
+                    isAI, // Flag to identify AI messages
+                    isOwn: sender?.toString() === this.nodeOneCore.ownerId?.toString() // Ownership flag for UI alignment
                 };
             }));
             // Sort by timestamp ascending (oldest first in array)
@@ -581,7 +582,7 @@ export class ChatPlan {
                                         // Load avatar color from AvatarPreference storage
                                         try {
                                             const result = await getObjectByIdHash(participantId);
-                                            if (result && result.obj && result.obj.$type$ === 'AvatarPreference') {
+                                            if (result && result.obj && typeof result.obj === 'object' && '$type$' in result.obj && result.obj.$type$ === 'AvatarPreference') {
                                                 color = result.obj.color;
                                             }
                                         }
