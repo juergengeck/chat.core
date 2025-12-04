@@ -198,14 +198,40 @@ export class ContactsPlan {
               // Email not found
             }
 
-            // Extract avatar blob hash from ProfileImage description
+            // Extract avatar blob hash from ProfileImage description (prefer main profile)
             try {
               const profileImages = profile.descriptionsOfType?.('ProfileImage');
               if (profileImages && profileImages.length > 0) {
                 avatarBlobHash = (profileImages[profileImages.length - 1] as any).image;
               }
             } catch (e) {
-              // Avatar not found
+              // Avatar not found in main profile
+            }
+
+            // If no avatar in main profile, check other profiles (bubble up)
+            if (!avatarBlobHash) {
+              try {
+                const allProfiles: any[] = await this.withTimeout(
+                  someone.profiles(),
+                  3000,
+                  [] as any[],
+                  `profiles() for ${personId.substring(0, 8)}`
+                );
+
+                for (const otherProfile of allProfiles) {
+                  if (avatarBlobHash) break; // Found one, stop searching
+                  try {
+                    const otherProfileImages = otherProfile.descriptionsOfType?.('ProfileImage');
+                    if (otherProfileImages && otherProfileImages.length > 0) {
+                      avatarBlobHash = (otherProfileImages[otherProfileImages.length - 1] as any).image;
+                    }
+                  } catch (e) {
+                    // Continue to next profile
+                  }
+                }
+              } catch (e) {
+                // Could not get other profiles, continue without avatar
+              }
             }
           }
 
