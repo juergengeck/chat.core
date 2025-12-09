@@ -8,6 +8,7 @@
 import { storeVersionedObject, getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { storeUnversionedObject, getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { getDefaultKeys } from '@refinio/one.core/lib/keychain/keychain.js';
 /**
  * ContactsPlan - Pure business logic for contact operations
  *
@@ -15,7 +16,7 @@ import { ensureIdHash } from '@refinio/one.core/lib/util/type-checks.js';
  * - nodeOneCore: Platform-specific ONE.core instance
  */
 export class ContactsPlan {
-    static get name() { return 'Contacts'; }
+    static get planName() { return 'Contacts'; }
     static get description() { return 'Manages contacts, groups, and trust relationships'; }
     static get version() { return '1.0.0'; }
     // Stable Plan ID for Story/Assembly tracking
@@ -79,6 +80,8 @@ export class ContactsPlan {
             // Track processed Person IDs to skip duplicates
             const processedPersonIds = new Set();
             // Transform Someone objects to plain serializable objects
+            // Track whether we're processing the owner (first item is "me")
+            let isOwner = true;
             for (const someone of someoneObjects) {
                 try {
                     // Timeout protection: If a contact is corrupt/hanging, skip it after 2 seconds
@@ -193,8 +196,10 @@ export class ContactsPlan {
                         isAI: isAI,
                         modelId: modelId,
                         canMessage: true,
-                        isConnected: isAI // AI is always "connected"
+                        isConnected: isAI, // AI is always "connected"
+                        status: isOwner ? 'owner' : undefined
                     });
+                    isOwner = false; // Only first contact is owner
                 }
                 catch (contactError) {
                     // Skip this contact if processing fails - don't let one bad contact break the entire list
@@ -829,6 +834,24 @@ export class ContactsPlan {
                 catch (e) {
                     // Avatar not found
                 }
+                // Get identity key fingerprint for this profile's person
+                let identityKeyFingerprint;
+                let identityKeyType;
+                try {
+                    const personId = profile.personId;
+                    const keysHash = await getDefaultKeys(personId);
+                    if (keysHash) {
+                        const keys = await getObject(keysHash);
+                        if (keys && keys.publicSignKey) {
+                            // Use first 40 chars of the hex public sign key as fingerprint
+                            identityKeyFingerprint = keys.publicSignKey.slice(0, 40);
+                            identityKeyType = 'Ed25519';
+                        }
+                    }
+                }
+                catch (e) {
+                    // Keys not found - that's ok for some contacts
+                }
                 profiles.push({
                     profileId: profile.profileId,
                     profileIdHash: profile.idHash,
@@ -836,7 +859,9 @@ export class ContactsPlan {
                     name,
                     email,
                     avatarBlobHash,
-                    isMainProfile: profile.idHash === mainProfileIdHash
+                    isMainProfile: profile.idHash === mainProfileIdHash,
+                    identityKeyFingerprint,
+                    identityKeyType
                 });
             }
             return { success: true, profiles };

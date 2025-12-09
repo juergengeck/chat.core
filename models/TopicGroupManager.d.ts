@@ -128,7 +128,7 @@ export declare class TopicGroupManager {
     /**
      * Add participants to existing topic's group
      */
-    addParticipantsToTopic(topicId: string, participants: SHA256IdHash<Person>[]): Promise<unknown>;
+    addParticipantsToTopic(topicId: string, participants: SHA256IdHash<Person>[]): Promise<void>;
     /**
      * Query IdAccess objects to find the group for a topic
      * This is the persistent way to find groups - IdAccess stores the topic→group relationship

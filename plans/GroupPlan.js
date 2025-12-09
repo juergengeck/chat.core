@@ -23,7 +23,7 @@
  */
 export class GroupPlan {
     static get planId() { return 'group'; }
-    static get name() { return 'Group'; }
+    static get planName() { return 'Group'; }
     static get description() { return 'Manages conversation groups with Story/Assembly tracking'; }
     static get version() { return '1.0.0'; }
     topicGroupManager;

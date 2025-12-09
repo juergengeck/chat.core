@@ -231,7 +231,7 @@ export interface VerifyMessageAssertionResponse {
  */
 export class ChatPlan {
   static get planId(): string { return 'chat'; }
-  static get name(): string { return 'Chat'; }
+  static get planName(): string { return 'Chat'; }
   static get description(): string { return 'Manages chat conversations, messages, and participants'; }
   static get version(): string { return '1.0.0'; }
 
@@ -561,11 +561,27 @@ export class ChatPlan {
           console.log(`[ChatPlan] 🧠 Message ${msg.id?.substring(0, 8)} has thinking (${thinking.length} chars)`);
         }
 
-        // Attachments are stored as references to ONE objects (BLOB, Certificate, CLOB, etc.)
-        // Transform to UI format: array of hashes -> array of {hash} objects
+        // Attachments are stored as references to ChatAttachment objects which contain metadata
+        // Fetch each ChatAttachment to get type, name, size, mimeType, etc.
         const rawAttachments = msg.data?.attachments || [];
-        const attachments = rawAttachments.map((att: SHA256Hash) => ({
-          hash: att as string
+        const attachments = await Promise.all(rawAttachments.map(async (attHash: SHA256Hash) => {
+          try {
+            const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+            const chatAttachment = await getObject(attHash) as any;
+            return {
+              hash: chatAttachment.hash as string,  // The actual BLOB/object hash
+              type: chatAttachment.type,
+              name: chatAttachment.metadata?.name,
+              size: chatAttachment.metadata?.size,
+              mimeType: chatAttachment.metadata?.mimeType,
+              preview: chatAttachment.metadata?.preview,
+              thumbnailHash: chatAttachment.metadata?.thumbnailHash
+            };
+          } catch (error) {
+            console.error('[ChatPlan] Failed to fetch ChatAttachment:', attHash, error);
+            // Fallback: return just the hash if fetch fails
+            return { hash: attHash as string };
+          }
         }));
 
         return {
@@ -852,7 +868,7 @@ export class ChatPlan {
                     // Load avatar color from AvatarPreference storage
                     try {
                       const result = await getObjectByIdHash(participantId as any);
-                      if (result && result.obj && typeof result.obj === 'object' && '$type$' in result.obj && result.obj.$type$ === 'AvatarPreference') {
+                      if (result && result.obj && typeof result.obj === 'object' && '$type$' in result.obj && (result.obj as any).$type$ === 'AvatarPreference') {
                         color = (result.obj as any).color;
                       }
                     } catch (e) {

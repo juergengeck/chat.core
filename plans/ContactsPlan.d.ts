@@ -24,6 +24,7 @@ export interface Contact {
     modelId?: string;
     canMessage: boolean;
     isConnected: boolean;
+    status?: 'owner' | 'connected' | 'disconnected';
 }
 export interface ContactWithTrust extends Contact {
     trustLevel: string;
@@ -48,7 +49,7 @@ export interface GetContactsWithTrustResponse {
  * - nodeOneCore: Platform-specific ONE.core instance
  */
 export declare class ContactsPlan {
-    static get name(): string;
+    static get planName(): string;
     static get description(): string;
     static get version(): string;
     static get planId(): SHA256IdHash<any>;

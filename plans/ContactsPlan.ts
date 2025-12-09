@@ -17,6 +17,7 @@ import {
 } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { ensureIdHash, SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
+import { getDefaultKeys } from '@refinio/one.core/lib/keychain/keychain.js';
 // StoryFactory type (defined locally to avoid moduleResolution issues)
 interface StoryFactory {
   recordExecution(context: any, operation: () => Promise<any>): Promise<{ result: any; storyId?: any; assemblyId?: any }>;
@@ -33,6 +34,7 @@ export interface Contact {
   modelId?: string;
   canMessage: boolean;
   isConnected: boolean;
+  status?: 'owner' | 'connected' | 'disconnected';
 }
 
 export interface ContactWithTrust extends Contact {
@@ -61,7 +63,7 @@ export interface GetContactsWithTrustResponse {
  * - nodeOneCore: Platform-specific ONE.core instance
  */
 export class ContactsPlan {
-  static get name(): string { return 'Contacts'; }
+  static get planName(): string { return 'Contacts'; }
   static get description(): string { return 'Manages contacts, groups, and trust relationships'; }
   static get version(): string { return '1.0.0'; }
 
@@ -138,6 +140,8 @@ export class ContactsPlan {
       const processedPersonIds = new Set<string>();
 
       // Transform Someone objects to plain serializable objects
+      // Track whether we're processing the owner (first item is "me")
+      let isOwner = true;
       for (const someone of someoneObjects) {
         try {
           // Timeout protection: If a contact is corrupt/hanging, skip it after 2 seconds
@@ -272,8 +276,10 @@ export class ContactsPlan {
             isAI: isAI,
             modelId: modelId,
             canMessage: true,
-            isConnected: isAI // AI is always "connected"
+            isConnected: isAI, // AI is always "connected"
+            status: isOwner ? 'owner' : undefined
           });
+          isOwner = false; // Only first contact is owner
         } catch (contactError) {
           // Skip this contact if processing fails - don't let one bad contact break the entire list
           console.error('[ContactsPlan] Failed to process contact, skipping:', contactError);
@@ -995,6 +1001,24 @@ export class ContactsPlan {
           // Avatar not found
         }
 
+        // Get identity key fingerprint for this profile's person
+        let identityKeyFingerprint: string | undefined;
+        let identityKeyType: string | undefined;
+        try {
+          const personId = profile.personId;
+          const keysHash = await getDefaultKeys(personId);
+          if (keysHash) {
+            const keys = await getObject(keysHash);
+            if (keys && keys.publicSignKey) {
+              // Use first 40 chars of the hex public sign key as fingerprint
+              identityKeyFingerprint = keys.publicSignKey.slice(0, 40);
+              identityKeyType = 'Ed25519';
+            }
+          }
+        } catch (e) {
+          // Keys not found - that's ok for some contacts
+        }
+
         profiles.push({
           profileId: profile.profileId,
           profileIdHash: profile.idHash,
@@ -1002,7 +1026,9 @@ export class ContactsPlan {
           name,
           email,
           avatarBlobHash,
-          isMainProfile: profile.idHash === mainProfileIdHash
+          isMainProfile: profile.idHash === mainProfileIdHash,
+          identityKeyFingerprint,
+          identityKeyType
         });
       }
 

@@ -696,7 +696,7 @@ export class TopicGroupManager {
   /**
    * Add participants to existing topic's group
    */
-  async addParticipantsToTopic(topicId: string, participants: SHA256IdHash<Person>[]): Promise<unknown> {
+  async addParticipantsToTopic(topicId: string, participants: SHA256IdHash<Person>[]): Promise<void> {
     console.log(`[TopicGroupManager] ========== ADD PARTICIPANTS START ==========`);
     console.log(`[TopicGroupManager] Topic: ${topicId}`);
     console.log(`[TopicGroupManager] Adding participants:`, participants.map((p: any) => String(p).substring(0, 8)));

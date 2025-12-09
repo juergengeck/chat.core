@@ -114,7 +114,7 @@ export interface GetTopicParticipantsResponse {
  */
 export declare class GroupPlan {
     static get planId(): string;
-    static get name(): string;
+    static get planName(): string;
     static get description(): string;
     static get version(): string;
     private topicGroupManager;

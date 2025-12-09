@@ -132,7 +132,7 @@ export interface GetTopicParticipantsResponse {
  */
 export class GroupPlan {
   static get planId(): string { return 'group'; }
-  static get name(): string { return 'Group'; }
+  static get planName(): string { return 'Group'; }
   static get description(): string { return 'Manages conversation groups with Story/Assembly tracking'; }
   static get version(): string { return '1.0.0'; }
 

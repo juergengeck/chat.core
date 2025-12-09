@@ -16,6 +16,7 @@
     "./types/*": "./types/*"
   },
   "peerDependencies": {
+    "@lama/core": "*",
     "@refinio/one.core": "*",
     "@refinio/one.models": "*",
     "@refinio/refinio-api": "*"

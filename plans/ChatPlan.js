@@ -32,7 +32,7 @@ import { createP2PTopic } from '../services/P2PTopicService.js';
  */
 export class ChatPlan {
     static get planId() { return 'chat'; }
-    static get name() { return 'Chat'; }
+    static get planName() { return 'Chat'; }
     static get description() { return 'Manages chat conversations, messages, and participants'; }
     static get version() { return '1.0.0'; }
     nodeOneCore;
@@ -321,11 +321,28 @@ export class ChatPlan {
                 if (thinking) {
                     console.log(`[ChatPlan] 🧠 Message ${msg.id?.substring(0, 8)} has thinking (${thinking.length} chars)`);
                 }
-                // Attachments are stored as references to ONE objects (BLOB, Certificate, CLOB, etc.)
-                // Transform to UI format: array of hashes -> array of {hash} objects
+                // Attachments are stored as references to ChatAttachment objects which contain metadata
+                // Fetch each ChatAttachment to get type, name, size, mimeType, etc.
                 const rawAttachments = msg.data?.attachments || [];
-                const attachments = rawAttachments.map((att) => ({
-                    hash: att
+                const attachments = await Promise.all(rawAttachments.map(async (attHash) => {
+                    try {
+                        const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+                        const chatAttachment = await getObject(attHash);
+                        return {
+                            hash: chatAttachment.hash, // The actual BLOB/object hash
+                            type: chatAttachment.type,
+                            name: chatAttachment.metadata?.name,
+                            size: chatAttachment.metadata?.size,
+                            mimeType: chatAttachment.metadata?.mimeType,
+                            preview: chatAttachment.metadata?.preview,
+                            thumbnailHash: chatAttachment.metadata?.thumbnailHash
+                        };
+                    }
+                    catch (error) {
+                        console.error('[ChatPlan] Failed to fetch ChatAttachment:', attHash, error);
+                        // Fallback: return just the hash if fetch fails
+                        return { hash: attHash };
+                    }
                 }));
                 return {
                     id: msg.id,
