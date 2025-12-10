@@ -56,7 +56,7 @@ export class GroupPlan {
         const assemblyHandler = {
             async createStory(params) {
                 const story = {
-                    $type$: 'AssemblyStory',
+                    $type$: 'Story',
                     id: params.id,
                     title: params.title,
                     description: params.description,
@@ -81,7 +81,7 @@ export class GroupPlan {
             },
             async createAssembly(params) {
                 const assembly = {
-                    $type$: 'CubeAssembly',
+                    $type$: 'Assembly',
                     storyRef: params.storyRef,
                     supply: params.supply,
                     demand: params.demand,
