@@ -62,6 +62,7 @@ RUNTIME:
 chat.core/
 ├── plans/                 # Pure business logic plans (RPC-style interfaces)
 │   ├── ChatPlan.ts            # Message/conversation operations
+│   ├── GroupPlan.ts           # Group/topic management (delegates to TopicGroupManager)
 │   ├── ContactsPlan.ts        # Contact management
 │   ├── ExportPlan.ts          # Export/import operations
 │   └── FeedForwardPlan.ts     # Feed forward operations
@@ -112,7 +113,7 @@ export class ChatPlan {
 **Plans**: RPC-style interfaces for transport layers (IPC, Workers)
 - Request/Response pattern
 - Transport-agnostic
-- Examples: ChatPlan, ContactsPlan, ExportPlan, FeedForwardPlan
+- Examples: ChatPlan, GroupPlan, ContactsPlan, ExportPlan, FeedForwardPlan
 
 **Services**: Reusable business logic components
 - Direct method calls
@@ -212,6 +213,35 @@ Topic management with Group signature validation:
 - Ensures only trusted, properly signed Groups are accepted
 - Prevents unauthorized group injection attacks
 - Integrates with one.trust certificate validation
+
+### GroupPlan
+
+Thin wrapper around TopicGroupManager for group operations:
+
+**Features**:
+- Creates conversation groups for topics
+- Gets group for a topic
+- Gets participants for a topic
+- Delegates all work to TopicGroupManager
+
+**Usage Pattern**:
+```typescript
+import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
+
+const groupPlan = new GroupPlan(topicGroupManager, oneCore);
+
+// Create group
+const result = await groupPlan.createGroup({
+  topicId: 'topic-123',
+  topicName: 'My Conversation',
+  participants: [personIdHash1, personIdHash2]
+});
+
+// Get group for topic
+const groupResult = await groupPlan.getGroupForTopic({ topicId: 'topic-123' });
+```
+
+**Note**: GroupPlan does NOT create Story/Assembly objects inline. If audit tracking is needed, use `@refinio/api` StoryFactory with `assembly.core` AssemblyListener at the platform level. See refinio.api and assembly.core CLAUDE.md for details.
 
 ## Type Safety
 
