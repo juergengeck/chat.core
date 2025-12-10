@@ -53,16 +53,9 @@ export class ChatPlan {
             this.groupPlan = groupPlan;
         }
         else if (nodeOneCore.topicGroupManager) {
-            // Auto-create GroupPlan with storage functions from nodeOneCore
-            const storage = nodeOneCore.storeVersionedObject && nodeOneCore.getObjectByIdHash && nodeOneCore.getObject
-                ? {
-                    storeVersionedObject: nodeOneCore.storeVersionedObject.bind(nodeOneCore),
-                    getObjectByIdHash: nodeOneCore.getObjectByIdHash.bind(nodeOneCore),
-                    getObject: nodeOneCore.getObject.bind(nodeOneCore)
-                }
-                : undefined;
-            this.groupPlan = new GroupPlanImpl(nodeOneCore.topicGroupManager, nodeOneCore, storage);
-            console.log('[ChatPlan] ✅ Auto-created GroupPlan with Story/Assembly tracking');
+            // Auto-create GroupPlan
+            this.groupPlan = new GroupPlanImpl(nodeOneCore.topicGroupManager, nodeOneCore);
+            console.log('[ChatPlan] ✅ Auto-created GroupPlan');
         }
     }
     /**

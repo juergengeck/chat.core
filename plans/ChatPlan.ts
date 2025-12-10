@@ -11,7 +11,7 @@
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
-import { GroupPlan as GroupPlanImpl, type StorageFunctions } from './GroupPlan.js';
+import { GroupPlan as GroupPlanImpl } from './GroupPlan.js';
 import { createP2PTopic } from '../services/P2PTopicService.js';
 
 // StoryFactory interface for optional Story/Assembly tracking
@@ -261,22 +261,12 @@ export class ChatPlan {
       // Use provided GroupPlan (backward compatibility or power user override)
       this.groupPlan = groupPlan;
     } else if (nodeOneCore.topicGroupManager) {
-      // Auto-create GroupPlan with storage functions from nodeOneCore
-      const storage: StorageFunctions | undefined =
-        nodeOneCore.storeVersionedObject && nodeOneCore.getObjectByIdHash && nodeOneCore.getObject
-          ? {
-              storeVersionedObject: nodeOneCore.storeVersionedObject.bind(nodeOneCore),
-              getObjectByIdHash: nodeOneCore.getObjectByIdHash.bind(nodeOneCore),
-              getObject: nodeOneCore.getObject.bind(nodeOneCore)
-            }
-          : undefined;
-
+      // Auto-create GroupPlan
       this.groupPlan = new GroupPlanImpl(
         nodeOneCore.topicGroupManager,
-        nodeOneCore,
-        storage
+        nodeOneCore
       );
-      console.log('[ChatPlan] ✅ Auto-created GroupPlan with Story/Assembly tracking');
+      console.log('[ChatPlan] ✅ Auto-created GroupPlan');
     }
   }
 
