@@ -54,6 +54,41 @@ export class TopicGroupManager {
   }
 
   /**
+   * Check if an Access/IdAccess hash is allowed to be sent outbound via CHUM
+   * Used by ConnectionsModel's objectFilter to control what we share with peers.
+   *
+   * For now, we allow all outbound Access/IdAccess from our instance since
+   * they're created by us (via createAccess) for legitimate sharing purposes.
+   *
+   * @param hash - The Access or IdAccess hash to check
+   * @returns true if allowed to share outbound
+   */
+  isAllowedOutbound(hash: string): boolean {
+    // Allow all outbound Access/IdAccess - they were created by us for sharing
+    // CHUM only sends objects we have access to, so these are our grants
+    console.log(`[TopicGroupManager] isAllowedOutbound: ✅ ${hash.substring(0, 8)} (allowing all outbound Access/IdAccess)`);
+    return true;
+  }
+
+  /**
+   * Check if an Access/IdAccess hash is allowed to be accepted inbound via CHUM
+   * Used by ConnectionsModel's importFilter to control what we accept from peers.
+   *
+   * For now, we allow all inbound Access/IdAccess from paired peers since
+   * pairing establishes trust. The certificate validation on Group objects
+   * provides the security boundary.
+   *
+   * @param hash - The Access or IdAccess hash to check
+   * @returns true if allowed to accept inbound
+   */
+  isAllowedInbound(hash: string): boolean {
+    // Allow all inbound Access/IdAccess from paired peers
+    // Pairing establishes trust, and Group certificate validation provides security
+    console.log(`[TopicGroupManager] isAllowedInbound: ✅ ${hash.substring(0, 8)} (allowing all inbound Access/IdAccess from paired peers)`);
+    return true;
+  }
+
+  /**
    * Get cached group for a topic (internal use by GroupPlan)
    */
   getCachedGroupForTopic(topicId: string): SHA256IdHash<any> | undefined {
