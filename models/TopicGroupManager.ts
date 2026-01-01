@@ -6,7 +6,7 @@
  * Platform-specific concerns are handled via dependency injection.
  */
 
-import { getAllEntries } from '@refinio/one.core/lib/reverse-map-query.js';
+import { getAllIdObjectEntries } from '@refinio/one.core/lib/reverse-map-query.js';
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
@@ -406,17 +406,11 @@ export class TopicGroupManager {
 
       // Create a channel for the participant in this topic
       if (this.oneCore.channelManager) {
-        await this.oneCore.channelManager.createChannel(topicId, personId);
+        const channelResult = await this.oneCore.channelManager.createChannel([personId], personId);
 
         // Grant the group access to the participant's channel
-        const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
-          $type$: 'ChannelInfo',
-          id: topicId,
-          owner: personId
-        });
-
         await this.storageDeps.createAccess([{
-          id: channelHash,
+          id: channelResult.channelInfoIdHash,
           person: [],
           group: [newGroupIdHash],
           mode: SET_ACCESS_MODE.ADD
@@ -627,9 +621,10 @@ export class TopicGroupManager {
 
     // Create the topic (without group - privacy-preserving)
     // Each participant always owns their own channel
-    console.log(`[TopicGroupManager] 🔍 DEBUG Calling topicModel.createGroupTopic("${topicName}", "${topicId}", owner)`);
+    console.log(`[TopicGroupManager] 🔍 DEBUG Calling topicModel.createGroupTopic("${topicName}", participants, "${topicId}", owner)`);
     const topic: any = await this.oneCore.topicModel.createGroupTopic(
       topicName,
+      allParticipants,
       topicId,
       this.oneCore.ownerId
     );
@@ -652,19 +647,13 @@ export class TopicGroupManager {
     for (const participantId of allParticipants) {
       if (participantId && this.oneCore.channelManager) {
         try {
-          // createChannel is idempotent - if channel exists, it's a no-op
-          await this.oneCore.channelManager.createChannel(topicId, participantId);
+          // createChannel returns {channelInfoIdHash, participantsHash}
+          const channelResult = await this.oneCore.channelManager.createChannel([participantId], participantId);
           console.log(`[TopicGroupManager] Created channel for participant ${String(participantId).substring(0, 8)}`);
 
           // Grant the group access to this participant's channel
-          const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
-            $type$: 'ChannelInfo',
-            id: topicId,
-            owner: participantId
-          });
-
           await this.storageDeps.createAccess([{
-            id: channelHash,
+            id: channelResult.channelInfoIdHash,
             person: [],
             group: [groupIdHash],
             mode: SET_ACCESS_MODE.ADD
@@ -897,17 +886,11 @@ export class TopicGroupManager {
 
             if (isAI) {
               console.log(`[TopicGroupManager] Creating channel for AI participant ${String(participantId).substring(0, 8)}`);
-              await this.oneCore.channelManager.createChannel(topicId, participantId);
+              const channelResult = await this.oneCore.channelManager.createChannel([participantId], participantId);
 
               // Grant the NEW group access to this channel
-              const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
-                $type$: 'ChannelInfo',
-                id: topicId,
-                owner: participantId
-              });
-
               await this.storageDeps.createAccess([{
-                id: channelHash,
+                id: channelResult.channelInfoIdHash,
                 person: [],
                 group: [newGroupIdHash],
                 mode: SET_ACCESS_MODE.ADD
@@ -924,6 +907,21 @@ export class TopicGroupManager {
       }
 
       console.log(`[TopicGroupManager] Updated group for topic ${topicId}: added ${newMembers.length} new participants (total: ${allParticipants.length})`);
+
+      // CRITICAL: Grant the NEW group access to the Topic and its channel
+      // Without this, new participants can receive the Group via person-based access,
+      // but NOT the Topic/ChannelInfo (which use group-based access)
+      try {
+        const topic: any = await (this.oneCore.topicModel as any).getTopicByName(topicId);
+        if (topic) {
+          await this.oneCore.topicModel.addGroupToTopic(newGroupIdHash, topic);
+          console.log(`[TopicGroupManager] ✅ Granted new group ${String(newGroupIdHash).substring(0, 8)} access to Topic ${topicId}`);
+        } else {
+          console.warn(`[TopicGroupManager] ⚠️ Topic ${topicId} not found - new participants may not receive Topic via CHUM`);
+        }
+      } catch (error) {
+        console.error(`[TopicGroupManager] ❌ Failed to grant new group access to Topic:`, (error as Error).message);
+      }
 
       groupIdHash = newGroupIdHash;
     }
@@ -954,11 +952,15 @@ export class TopicGroupManager {
 
       if (topic && topic.channel) {
         // Query IdAccess reverse maps to find which group has access to this channel
-        const idAccessHashes = await getAllEntries(topic.channel, 'IdAccess');
+        // IMPORTANT: IdAccess is an ID object, so we must use getAllIdObjectEntries
+        // (not getAllEntries which queries .Object. maps instead of .IdObject. maps)
+        const idAccessHashes = await getAllIdObjectEntries(topic.channel, 'IdAccess');
 
         for (const idAccessHash of idAccessHashes) {
-          const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
-          const idAccess: any = await getObject(idAccessHash);
+          // Use getObjectByIdHash for ID hashes (not getObject which expects concrete hashes)
+          const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+          const idAccessResult = await getObjectByIdHash(idAccessHash);
+          const idAccess: any = idAccessResult?.obj;
 
           if (idAccess && idAccess.group && idAccess.group.length > 0) {
             const groupIdHash = idAccess.group[0];
@@ -1054,18 +1056,12 @@ export class TopicGroupManager {
 
       if (!hasChannel) {
         // Create our channel for this topic
-        await this.oneCore.channelManager.createChannel(topicId, this.oneCore.ownerId);
+        const channelResult = await this.oneCore.channelManager.createChannel([this.oneCore.ownerId], this.oneCore.ownerId);
         console.log(`[TopicGroupManager] Created our channel for topic ${topicId}`);
 
         // Grant the group access to our channel
-        const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
-          $type$: 'ChannelInfo',
-          id: topicId,
-          owner: this.oneCore.ownerId
-        });
-
         await this.storageDeps.createAccess([{
-          id: channelHash,
+          id: channelResult.channelInfoIdHash,
           person: [],
           group: [groupIdHash],
           mode: SET_ACCESS_MODE.ADD
@@ -1154,17 +1150,11 @@ export class TopicGroupManager {
         console.log(`[TopicGroupManager] Creating our owned channel for topic ${topicId}`);
 
         // Create our owned channel
-        await this.oneCore.channelManager.createChannel(topicId, this.oneCore.ownerId);
+        const channelResult = await this.oneCore.channelManager.createChannel([this.oneCore.ownerId], this.oneCore.ownerId);
 
         // Grant the group access to our channel
-        const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
-          $type$: 'ChannelInfo',
-          id: topicId,
-          owner: this.oneCore.ownerId
-        });
-
         await this.storageDeps.createAccess([{
-          id: channelHash,
+          id: channelResult.channelInfoIdHash,
           person: [],
           group: [groupIdHash],
           mode: SET_ACCESS_MODE.ADD
@@ -1257,9 +1247,19 @@ export class TopicGroupManager {
         console.log(`[TopicGroupManager] P2P topic already exists for ${p2pTopicId}`);
 
         // Check what channels exist for this topic
-        const channels: any = await this.oneCore.channelManager.getMatchingChannelInfos({channelId: p2pTopicId});
+        // Create HashGroup for the P2P participants to query matching channels
+        const p2pParticipantsForQuery = [this.oneCore.ownerId, peerPersonId];
+        const queryHashGroup: any = {
+          $type$: 'HashGroup',
+          person: new Set(p2pParticipantsForQuery)
+        };
+        const queryHashGroupResult = await this.storageDeps.storeUnversionedObject(queryHashGroup);
+
+        const channels: any = await this.oneCore.channelManager.getMatchingChannelInfos({
+          participants: queryHashGroupResult.hash
+        });
         console.log(`[TopicGroupManager] Existing channels for P2P topic:`, channels.map((ch: any) => ({
-          id: ch.id,
+          participants: ch.participants?.substring(0, 8),
           owner: ch.owner ? ch.owner?.substring(0, 8) : 'null'
         })));
 
@@ -1268,19 +1268,29 @@ export class TopicGroupManager {
         const hasNullOwnerChannel = channels.some((ch: any) => !ch.owner);
         const hasOwnerChannels = channels.some((ch: any) => ch.owner);
 
+        // P2P channels use both participants
+        const p2pParticipants = [this.oneCore.ownerId, peerPersonId];
+
         if (!hasNullOwnerChannel) {
           console.warn(`[TopicGroupManager] ⚠️ P2P topic missing null-owner channel, creating it...`);
 
-          // Create the null-owner channel for P2P
-          await this.oneCore.channelManager.createChannel(p2pTopicId, null);
+          // Create the null-owner channel for P2P with both participants
+          await this.oneCore.channelManager.createChannel(p2pParticipants, null);
           console.log(`[TopicGroupManager] Created null-owner channel for existing P2P topic`);
         }
 
         // ALWAYS ensure access is granted for the null-owner channel
         // This is critical - even if the channel exists, the peer might not have access
+        // Create HashGroup for participants to get the participantsHash
+        const hashGroup: any = {
+          $type$: 'HashGroup',
+          person: new Set(p2pParticipants)
+        };
+        const hashGroupResult = await this.storageDeps.storeUnversionedObject(hashGroup);
+
         const channelHash: any = await this.storageDeps.calculateIdHashOfObj({
           $type$: 'ChannelInfo',
-          id: p2pTopicId,
+          participants: hashGroupResult.hash,
           owner: undefined
         });
 
