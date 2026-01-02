@@ -40,7 +40,7 @@ export interface TopicGroupManagerStorageDeps {
  * 4. Grants group access to the channel
  * 5. Creates/references local topic for the group chat
  *
- * TrustPlan is wired by ChatModule via the demand/supply system.
+ * TrustPlan is passed via constructor from ChatModule (proper dependency injection).
  * ParanoiaLevel is set in trust.core types (0=implied trust, 1=manual confirmation).
  */
 export interface OneCoreInstance {
@@ -49,7 +49,6 @@ export interface OneCoreInstance {
   topicModel: TopicModel;
   leuteModel: LeuteModel;
   aiAssistantModel?: any; // AIAssistantHandler
-  trustPlan?: any; // TrustPlan for auto-trust assignment on group receive (wired by ChatModule)
   paranoiaLevel?: 0 | 1; // 0 = implied trust (default), 1 = manual confirmation required
 }
 
@@ -57,11 +56,13 @@ export class TopicGroupManager {
   private oneCore: OneCoreInstance;
   private conversationGroups: Map<string, SHA256IdHash<any>>;
   private storageDeps: TopicGroupManagerStorageDeps;
+  private trustPlan?: any; // TrustPlan for auto-trust assignment on group receive
   private allowedGroups: Set<SHA256IdHash<any>>; // Groups we created and allow sharing
 
-  constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps) {
+  constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps, trustPlan?: any) {
     this.oneCore = oneCore;
     this.storageDeps = storageDeps;
+    this.trustPlan = trustPlan;
     this.conversationGroups = new Map(); // topicId -> groupIdHash
     this.allowedGroups = new Set(); // Groups we allow to share via CHUM
   }
@@ -1254,12 +1255,12 @@ export class TopicGroupManager {
       // This enables CHUM sync with group members we haven't directly paired with
       // Only at paranoia level 0 - level 1 requires manual confirmation
       const paranoiaLevel = this.oneCore.paranoiaLevel ?? 0;
-      if (paranoiaLevel === 0 && this.oneCore.trustPlan) {
+      if (paranoiaLevel === 0 && this.trustPlan) {
         console.log(`[TopicGroupManager] Paranoia level 0: establishing implied trust for ${members.length} group members`);
         for (const memberId of members) {
           if (String(memberId) !== String(this.oneCore.ownerId)) {
             try {
-              await this.oneCore.trustPlan.setTrustLevel({
+              await this.trustPlan.setTrustLevel({
                 personId: memberId,
                 trustLevel: 'medium', // Implied trust from group membership
                 reason: `Group membership: ${group.name}`
