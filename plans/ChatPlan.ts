@@ -374,6 +374,8 @@ export class ChatPlan {
         throw new Error('Message content cannot be empty');
       }
 
+      console.log('[ChatPlan.sendMessage] 📤 Sending to:', request.conversationId?.substring(0, 20) + '...');
+
       // Get topic room
       let topicRoom: any;
       try {
@@ -383,10 +385,18 @@ export class ChatPlan {
         throw new Error(`Topic ${request.conversationId} not found. Topics should be created before sending messages.`);
       }
 
+      // Debug: log topic and channel info
+      const topicChannel = topicRoom.topic?.channel;
+      console.log('[ChatPlan.sendMessage] 📋 Topic found:', {
+        id: topicRoom.topic?.id?.substring(0, 20),
+        channel: topicChannel?.substring(0, 16)
+      });
+
       // Determine if P2P or group
       const isP2P = request.conversationId.includes('<->');
       // For group chats, use the sender as channel owner (each participant owns their channel)
       const channelOwner = isP2P ? null : userId;
+      console.log('[ChatPlan.sendMessage] 🔑 isP2P:', isP2P, 'channelOwner:', channelOwner ? 'user' : 'null (shared)');
 
       // Send message with or without attachments
       if (request.attachments && request.attachments.length > 0) {
@@ -454,6 +464,8 @@ export class ChatPlan {
       const limit = request.limit || 50;
       const offset = request.offset || 0;
 
+      console.log('[ChatPlan.getMessages] 📥 Request:', request.conversationId?.substring(0, 20) + '...');
+
       // Get topic room - may not exist yet if topic is being created
       let topicRoom;
       try {
@@ -461,6 +473,7 @@ export class ChatPlan {
       } catch (error: any) {
         // Topic doesn't exist yet - return empty messages (valid during topic creation)
         if (error.message?.includes('does not exist')) {
+          console.log('[ChatPlan.getMessages] ⚠️ Topic does not exist:', request.conversationId?.substring(0, 20));
           return {
             success: true,
             messages: [],
@@ -475,7 +488,16 @@ export class ChatPlan {
         throw new Error(`Topic not found: ${request.conversationId}`);
       }
 
+      // Debug: log topic and channel info
+      const topicChannel = topicRoom.topic?.channel;
+      console.log('[ChatPlan.getMessages] 📋 Topic found:', {
+        id: topicRoom.topic?.id?.substring(0, 20),
+        name: topicRoom.topic?.name?.substring(0, 20),
+        channel: topicChannel?.substring(0, 16)
+      });
+
       const allMessages = await topicRoom.retrieveAllMessages();
+      console.log('[ChatPlan.getMessages] 📨 Retrieved messages:', allMessages.length);
 
       // Map ObjectData to UI format - extract the actual message data and look up sender names
       const formattedMessages = await Promise.all(allMessages.map(async (msg: any) => {
@@ -493,7 +515,7 @@ export class ChatPlan {
             if (isAI) {
               const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(sender);
               if (modelId) {
-                senderName = modelId; // Use model ID as display name (e.g., "gpt-oss:20b")
+                senderName = modelId;
               }
             }
           } catch (e) {
@@ -651,16 +673,15 @@ export class ChatPlan {
       console.error(`[ChatPlan] 🔍 BEFORE createGroup - participants.length: ${participants.length}`);
       console.error(`[ChatPlan] 🔍 BEFORE createGroup - participants:`, participants);
 
-      // Content-addressed topic ID: Deterministic based on participants + owner
-      // Same participants → Same topic ID → Natural deduplication
-      const allParticipants = [userId, ...participants].sort();
-      // Use crypto.subtle.digest for deterministic hashing
-      const participantString = allParticipants.join(',');
-      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(participantString));
+      // Topic ID: Unique based on owner + name + timestamp
+      // Each conversation gets a unique ID even with the same name
+      const timestamp = Date.now();
+      const topicIdSource = `${userId}:${name}:${timestamp}`;
+      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(topicIdSource));
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-      const topicId = `group-${hashHex.substring(0, 24)}`;
-      console.log(`[ChatPlan] Content-addressed topic ID: ${topicId}`);
+      const topicId = `topic-${hashHex.substring(0, 24)}`;
+      console.log(`[ChatPlan] Unique topic ID: ${topicId} (from: ${userId.substring(0, 8)}:${name}:${timestamp})`);
 
       // Create group using GroupPlan (creates Story/Assembly, delegates to TopicGroupManager)
       if (this.groupPlan) {
@@ -819,6 +840,16 @@ export class ChatPlan {
           const name = topic.name;
           console.log(`[ChatPlan] Processing topic: ${topicId} (${name})`);
 
+          // Get topic idHash for version history lookup
+          let topicIdHash: string | undefined;
+          try {
+            const idHash = await this.nodeOneCore.topicModel.topics.queryIdHashById(topicId);
+            topicIdHash = idHash ? String(idHash) : undefined;
+            console.log(`[ChatPlan] Topic ${topicId} idHash: ${topicIdHash?.substring(0, 16) || 'undefined'}`);
+          } catch (e) {
+            console.warn(`[ChatPlan] Failed to get idHash for ${topicId}:`, e);
+          }
+
           // Get participants from topic group with enriched data (names)
           // ALSO extract AI model info from participants (if any AI contact is found)
           let participants: any[] = [];
@@ -832,10 +863,54 @@ export class ChatPlan {
             }
 
             if (!groupIdHash) {
-              console.warn(`[ChatPlan] ⚠️ Topic ${topicId} (${name}) has NO GROUP - participants will be empty`);
-              // Skip topics without groups - they're from old implementations
-              // Set empty participants array and continue
-              participants = [];
+              console.warn(`[ChatPlan] ⚠️ Topic ${topicId} (${name}) has NO GROUP - using owner as fallback participant`);
+              // Fallback: Add current user as participant when there's no group
+              // This ensures topics always show at least one participant
+              const currentUserId = this.nodeOneCore.ownerId;
+              if (currentUserId) {
+                let ownerName = 'You';
+                let ownerIsAI = false;
+
+                // Try to get the owner's name from LeuteModel
+                if (this.nodeOneCore.leuteModel) {
+                  try {
+                    const me: any = await this.nodeOneCore.leuteModel.me();
+                    if (me) {
+                      const profile: any = await me.mainProfile();
+                      if (profile) {
+                        const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                        ownerName = personName?.name || profile.name || 'You';
+                      }
+                    }
+                  } catch (e) {
+                    // Use default name
+                  }
+                }
+
+                // Check if this is an AI topic and get the AI participant
+                if (this.nodeOneCore.aiAssistantModel) {
+                  const aiPersonId = this.nodeOneCore.aiAssistantModel.getAIPersonForTopic(topicId);
+                  if (aiPersonId) {
+                    const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(aiPersonId);
+                    if (modelId) {
+                      // Add AI as participant
+                      participants = [
+                        { id: currentUserId, name: ownerName, isLLM: false },
+                        { id: aiPersonId, name: modelId, isLLM: true }
+                      ];
+                      aiModelId = modelId;
+                    } else {
+                      participants = [{ id: currentUserId, name: ownerName, isLLM: ownerIsAI }];
+                    }
+                  } else {
+                    participants = [{ id: currentUserId, name: ownerName, isLLM: ownerIsAI }];
+                  }
+                } else {
+                  participants = [{ id: currentUserId, name: ownerName, isLLM: ownerIsAI }];
+                }
+              } else {
+                participants = [];
+              }
             } else {
               console.log(`[ChatPlan] Topic ${topicId} (${name}) - Loading group participants...`);
               const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
@@ -901,7 +976,7 @@ export class ChatPlan {
                                   const modelId = llmData.modelId;
                                   console.log(`[ChatPlan] 🔍 DEBUG: ✅ FOUND AI CONTACT! modelId:`, modelId);
                                   if (modelId) {
-                                    name = modelId; // Use model ID as name (e.g., "gpt-oss:20b")
+                                    name = modelId;
                                     isAI = true; // Mark as AI participant
                                     // CAPTURE the AI model ID for this conversation
                                     aiModelId = modelId;
@@ -1021,9 +1096,72 @@ export class ChatPlan {
             }
           }
 
+          // Resolve display name for P2P topics (format: hash1<->hash2)
+          // P2P topics should show the OTHER participant's name, not the raw hash format
+          let displayName = name || topicId;
+          const p2pRegex = /^([0-9a-f]{64})<->([0-9a-f]{64})$/;
+          const p2pMatch = topicId.match(p2pRegex);
+          if (p2pMatch && this.nodeOneCore.leuteModel) {
+            // Extract both participant IDs and find the OTHER one
+            const [, personA, personB] = p2pMatch;
+            const myId = String(this.nodeOneCore.ownerId);
+            const otherId = (personA === myId) ? personB : personA;
+
+            // Look up the other participant's name from contacts
+            try {
+              const others = await this.nodeOneCore.leuteModel.others();
+              for (const someone of others) {
+                const personId = await someone.mainIdentity();
+                if (personId && String(personId) === otherId) {
+                  const profile = await someone.mainProfile();
+                  if (profile) {
+                    // Try descriptionsOfType first (method), then fall back to array search
+                    let personName: any = null;
+                    if (typeof profile.descriptionsOfType === 'function') {
+                      const personNames = profile.descriptionsOfType('PersonName');
+                      if (personNames && personNames.length > 0) {
+                        personName = personNames[0];
+                      }
+                    }
+                    if (!personName && profile.personDescriptions) {
+                      personName = profile.personDescriptions.find((d: any) => d.$type$ === 'PersonName');
+                    }
+
+                    if (personName?.name) {
+                      displayName = personName.name;
+                    } else {
+                      // No PersonName - try email from Person object (may not be synced yet)
+                      try {
+                        const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+                        const personResult = await getObjectByIdHash(personId);
+                        const personObj = personResult?.obj as any;
+                        if (personObj?.email) {
+                          // Extract name part from email (before @)
+                          const emailName = personObj.email.split('@')[0];
+                          displayName = emailName || `Contact ${otherId.substring(0, 8)}`;
+                        }
+                      } catch {
+                        // Person object not synced yet - fallback handled below
+                      }
+                    }
+                  }
+                  break;
+                }
+              }
+              // If not found in contacts, use truncated hash as fallback
+              if (displayName === name || displayName === topicId) {
+                displayName = `Contact ${otherId.substring(0, 8)}`;
+              }
+            } catch (e) {
+              console.warn(`[ChatPlan] Could not resolve P2P contact name for ${otherId.substring(0, 8)}:`, e);
+              displayName = `Contact ${otherId.substring(0, 8)}`;
+            }
+          }
+
           return {
             id: topicId,
-            name: name || topicId,
+            topicIdHash,  // For version history lookup
+            name: displayName,
             type: 'chat',
             participants,
             lastActivity: lastMessageTime,
@@ -1215,140 +1353,84 @@ export class ChatPlan {
   /**
    * Add participants to a conversation
    *
-   * ARCHITECTURE: Different group = Different chat
-   * When participants change, we create a NEW chat with a NEW topicId.
-   * This provides conversation continuity from a user perspective while
-   * maintaining proper group/topic separation.
+   * Updates access rights for the existing topic - does NOT create a new topic.
+   * Topic versions are tracked via ONE.core's versioning system.
    */
   async addParticipants(request: AddParticipantsRequest): Promise<AddParticipantsResponse> {
     try {
       console.log('[ChatPlan] ========== ADD PARTICIPANTS START ==========');
-      console.log('[ChatPlan] Original conversation:', request.conversationId);
+      console.log('[ChatPlan] Conversation:', request.conversationId);
       console.log('[ChatPlan] Participant IDs to add:', request.participantIds);
 
       if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
         throw new Error('Models not initialized');
       }
 
-      if (!this.nodeOneCore.topicGroupManager) {
-        throw new Error('TopicGroupManager not initialized');
-      }
-
-      // Verify original topic exists
-      const originalTopicRoom = await this.nodeOneCore.topicModel.enterTopicRoom(request.conversationId);
-      if (!originalTopicRoom) {
+      // Get the existing topic
+      const topic = await this.nodeOneCore.topicModel.topics.queryById(request.conversationId);
+      if (!topic) {
         throw new Error(`Topic not found: ${request.conversationId}`);
       }
 
-      // Get current participants from the original group
-      let currentParticipants: string[] = [];
-      try {
-        currentParticipants = await this.nodeOneCore.topicGroupManager.getTopicParticipants(request.conversationId);
-        console.log('[ChatPlan] Current participants:', currentParticipants.map((p: string) => p.substring(0, 8)));
-      } catch (error) {
-        console.log('[ChatPlan] No existing group for topic (legacy topic)');
-        // For legacy topics without groups, assume just the owner
-        currentParticipants = [this.nodeOneCore.ownerId];
-      }
+      // Add participants to the topic (creates new channel, stores new Topic version)
+      const updatedTopic = await this.nodeOneCore.topicModel.addPersonsToTopic(
+        request.participantIds as any[], // SHA256IdHash<Person>[]
+        topic
+      );
 
-      // Calculate new participant list (current + new)
-      const allParticipants = [...new Set([...currentParticipants, ...request.participantIds])];
-      console.log('[ChatPlan] New participant list:', allParticipants.map((p: string) => p.substring(0, 8)));
+      console.log('[ChatPlan] ✅ Added participants to topic, new channel:', updatedTopic.channel?.substring(0, 8));
 
-      // Content-addressed topic ID: Deterministic based on participant set
-      // Same participants → Same topic ID → Natural deduplication
-      const sortedParticipants = [...allParticipants].sort();
-      // Use crypto.subtle.digest for deterministic hashing
-      const participantString = sortedParticipants.join(',');
-      const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(participantString));
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-      const newTopicId = `group-${hashHex.substring(0, 24)}`;
-      console.log('[ChatPlan] Content-addressed topic ID:', newTopicId);
-
-      // Check if topic already exists (CAS deduplication)
-      const existingTopic = await this.nodeOneCore.topicModel.topics.queryById(newTopicId);
-      if (existingTopic) {
-        console.log('[ChatPlan] ✅ Topic with these participants already exists - using existing conversation');
-        console.log('[ChatPlan] ========== ADD PARTICIPANTS END (content-addressed match) ==========');
-        return {
-          success: true,
-          data: {
-            conversationId: request.conversationId,
-            addedParticipants: request.participantIds,
-            newConversationId: newTopicId  // Switch to existing conversation
-          }
-        };
-      }
-
-      console.log('[ChatPlan] Creating new conversation with', allParticipants.length, 'participants');
-
-      // Get original topic name
-      const originalTopic = await this.nodeOneCore.topicModel.topics.queryById(request.conversationId);
-      const topicName = originalTopic?.name || `Chat ${newTopicId}`;
-
-      // Create NEW topic with the new group (all participants)
-      // Remove current owner from participantIds since createGroup adds owner automatically
-      const participantsExcludingOwner = allParticipants.filter((p: string) => p !== this.nodeOneCore.ownerId);
-
-      if (this.groupPlan) {
-        const result = await this.groupPlan.createGroup({
-          topicId: newTopicId,
-          topicName,
-          participants: participantsExcludingOwner,
-          autoAddChumConnections: false
-        });
-
-        if (!result.success) {
-          throw new Error(result.error || 'Group creation failed');
-        }
-
-        console.log(`[ChatPlan] ✅ Created new topic via GroupPlan: ${newTopicId} - Story: ${result.storyIdHash?.substring(0, 8)}`);
-      } else {
-        // Fallback: Direct TopicGroupManager call
-        await this.nodeOneCore.topicGroupManager.createGroupTopic(
-          topicName,
-          newTopicId,
-          participantsExcludingOwner
+      // CRITICAL: Also update TopicGroupManager to create versioned Group
+      // This creates proper version history with $versionHash$ for group membership changes
+      if (this.nodeOneCore.topicGroupManager) {
+        console.log('[ChatPlan] Updating TopicGroupManager with new participants for version history');
+        await this.nodeOneCore.topicGroupManager.addParticipantsToTopic(
+          request.conversationId,
+          request.participantIds as any[]
         );
-        console.log('[ChatPlan] ✅ Created new topic via TopicGroupManager:', newTopicId);
+        console.log('[ChatPlan] ✅ TopicGroupManager updated with versioned group');
+
+        // CRITICAL: Link the updated Group to the NEW channel
+        // getGroupForTopic uses IdAccess reverse maps on topic.channel, so we must update it
+        const groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(request.conversationId);
+        if (groupIdHash && updatedTopic.channel !== topic.channel) {
+          console.log('[ChatPlan] Linking group to new channel:', updatedTopic.channel?.substring(0, 8));
+          await this.nodeOneCore.topicModel.addGroupToTopic(groupIdHash, updatedTopic);
+          console.log('[ChatPlan] ✅ Group linked to new channel');
+        }
+      } else {
+        console.warn('[ChatPlan] TopicGroupManager not available - group version history will not be updated');
       }
 
-      // Detect AI participants and register the new topic
-      // CRITICAL: Check ALL participants (existing + new), not just request.participantIds
-      let hasAI = false;
+      // Detect if any new participant is AI and register the topic
       if (this.nodeOneCore.aiAssistantModel) {
-        for (const participantId of allParticipants) {
+        for (const participantId of request.participantIds) {
           const isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(participantId);
           if (isAI) {
-            hasAI = true;
             const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
-            console.log('[ChatPlan] Detected AI participant in new conversation - PersonId:', participantId.substring(0, 8), 'ModelId:', modelId);
+            console.log('[ChatPlan] Detected new AI participant - PersonId:', participantId.substring(0, 8), 'ModelId:', modelId);
 
-            // Register the topic with the AI Person's ID hash (not the model ID string)
-            this.nodeOneCore.aiAssistantModel.registerAITopic(newTopicId, participantId as any);
+            // Register the topic with the AI Person's ID hash
+            this.nodeOneCore.aiAssistantModel.registerAITopic(request.conversationId, participantId as any);
 
-            // Trigger introduction message from AI in the NEW chat (fire and forget)
-            this.nodeOneCore.aiAssistantModel.handleNewTopic(newTopicId).catch((error: Error) => {
+            // Trigger introduction message from AI (fire and forget)
+            this.nodeOneCore.aiAssistantModel.handleNewTopic(request.conversationId).catch((error: Error) => {
               console.error('[ChatPlan] Failed to generate AI introduction message:', error);
             });
 
-            // Only register the first AI participant (one AI per topic)
-            break;
+            break; // Only register the first AI participant
           }
         }
       }
 
       console.log('[ChatPlan] ========== ADD PARTICIPANTS END ==========');
-      console.log('[ChatPlan] ✅ Result: Created NEW conversation:', newTopicId);
-      console.log('[ChatPlan] ✅ Original conversation remains unchanged:', request.conversationId);
 
       return {
         success: true,
         data: {
           conversationId: request.conversationId,
-          addedParticipants: request.participantIds,
-          newConversationId: newTopicId  // Signal to UI that a new chat was created
+          addedParticipants: request.participantIds
+          // No newConversationId - same topic, just updated participants
         }
       };
     } catch (error) {

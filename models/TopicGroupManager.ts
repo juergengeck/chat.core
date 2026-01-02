@@ -31,6 +31,17 @@ export interface TopicGroupManagerStorageDeps {
 /**
  * Minimal interface for ONE.core instance
  * Works for both NodeOneCore and WorkerOneCore
+ *
+ * ## Group Receive Flow (CHUM → Channel/Topic)
+ * When a Group is received via CHUM:
+ * 1. handleReceivedGroup() validates the group signature
+ * 2. If paranoiaLevel=0 and trustPlan available, assigns 'medium' trust to all members
+ * 3. Creates owned channel for the topic (if not exists)
+ * 4. Grants group access to the channel
+ * 5. Creates/references local topic for the group chat
+ *
+ * TrustPlan is wired by ChatModule via the demand/supply system.
+ * ParanoiaLevel is set in trust.core types (0=implied trust, 1=manual confirmation).
  */
 export interface OneCoreInstance {
   ownerId: SHA256IdHash<Person>;
@@ -38,6 +49,8 @@ export interface OneCoreInstance {
   topicModel: TopicModel;
   leuteModel: LeuteModel;
   aiAssistantModel?: any; // AIAssistantHandler
+  trustPlan?: any; // TrustPlan for auto-trust assignment on group receive (wired by ChatModule)
+  paranoiaLevel?: 0 | 1; // 0 = implied trust (default), 1 = manual confirmation required
 }
 
 export class TopicGroupManager {
@@ -631,15 +644,17 @@ export class TopicGroupManager {
     console.log(`[TopicGroupManager] ✅ Step 2: Certificates propagated via CHUM`);
 
     // Step 3: NOW share HashGroup and Group (participants will validate certificates)
+    // NOTE: HashGroup is UNVERSIONED (storeUnversionedObject) so uses 'object' not 'id'
+    // Group is VERSIONED (storeVersionedObject) so uses 'id'
     await this.storageDeps.createAccess([
       {
-        id: storedHashGroup.hash,
+        object: storedHashGroup.hash,  // UNVERSIONED - use 'object' for Access
         person: allParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       },
       {
-        id: groupIdHash,
+        id: groupIdHash,  // VERSIONED - use 'id' for IdAccess
         person: allParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
@@ -776,8 +791,67 @@ export class TopicGroupManager {
       // Cache the group and add to allowed list
       this.conversationGroups.set(topicId, groupIdHash!);
       this.allowedGroups.add(groupIdHash!);
+      this.allowedGroups.add(storedHashGroup.hash);
       console.log(`[TopicGroupManager] ✅ Cached group hash ${String(groupIdHash!).substring(0, 8)} for topic ${topicId}`);
-      console.log(`[TopicGroupManager] ✅ Added group to allowed groups`);
+      console.log(`[TopicGroupManager] ✅ Added group and HashGroup to allowed groups`);
+
+      // CRITICAL: Create AffirmationCertificate for the HashGroup
+      // This cryptographically attests that we (the owner) created this group
+      const certResult = await this.oneCore.leuteModel.trust.certify(
+        'AffirmationCertificate',
+        { data: storedHashGroup.hash },
+        this.oneCore.ownerId
+      );
+      console.log(`[TopicGroupManager] ✅ Created AffirmationCertificate ${String(certResult.certificate.hash).substring(0, 8)} for HashGroup`);
+
+      // PROTOCOL: Share certificate objects P2P with each participant
+      // This ensures participants can validate the Group when they receive it
+      console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing certificates P2P with ${allParticipants.length} participants`);
+
+      // Step 1: Grant access to certificate objects (Certificate, Signature, License) FIRST
+      await this.storageDeps.createAccess([
+        {
+          object: certResult.certificate.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        },
+        {
+          object: certResult.signature.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        },
+        {
+          object: certResult.license.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        }
+      ]);
+      console.log(`[TopicGroupManager] ✅ Step 1: Shared certificates P2P with all participants`);
+
+      // Step 2: Wait for certificate sharing to propagate via CHUM
+      await new Promise(resolve => setTimeout(resolve, 100));
+      console.log(`[TopicGroupManager] ✅ Step 2: Certificates propagated via CHUM`);
+
+      // Step 3: Grant person-based access to HashGroup and Group
+      await this.storageDeps.createAccess([
+        {
+          object: storedHashGroup.hash,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        },
+        {
+          id: groupIdHash!,
+          person: allParticipants,
+          group: [],
+          mode: SET_ACCESS_MODE.ADD
+        }
+      ]);
+      console.log(`[TopicGroupManager] ✅ Step 3: Shared HashGroup and Group (participants will validate certificate)`);
+      console.log(`[TopicGroupManager] ✅ CERTIFICATE SHARING PROTOCOL COMPLETE`);
 
       console.log(`[TopicGroupManager] Created group for legacy topic ${topicId} with ${allParticipants.length} participants`);
     } else {
@@ -893,15 +967,16 @@ export class TopicGroupManager {
 
       // Step 3: NOW grant access to HashGroup and Group
       // Participants will validate the certificate when they receive these
+      // NOTE: HashGroup is UNVERSIONED so uses 'object', Group is VERSIONED so uses 'id'
       await this.storageDeps.createAccess([
         {
-          id: storedHashGroup.hash,
+          object: storedHashGroup.hash,  // UNVERSIONED - use 'object' for Access
           person: allParticipants,
           group: [],
           mode: SET_ACCESS_MODE.ADD
         },
         {
-          id: newGroupIdHash,
+          id: newGroupIdHash,  // VERSIONED - use 'id' for IdAccess
           person: allParticipants,
           group: [],
           mode: SET_ACCESS_MODE.ADD
@@ -1174,6 +1249,35 @@ export class TopicGroupManager {
       }
 
       console.log(`[TopicGroupManager] We are a member of group for topic ${topicId}`);
+
+      // Establish implied trust for all group members (including the group creator)
+      // This enables CHUM sync with group members we haven't directly paired with
+      // Only at paranoia level 0 - level 1 requires manual confirmation
+      const paranoiaLevel = this.oneCore.paranoiaLevel ?? 0;
+      if (paranoiaLevel === 0 && this.oneCore.trustPlan) {
+        console.log(`[TopicGroupManager] Paranoia level 0: establishing implied trust for ${members.length} group members`);
+        for (const memberId of members) {
+          if (String(memberId) !== String(this.oneCore.ownerId)) {
+            try {
+              await this.oneCore.trustPlan.setTrustLevel({
+                personId: memberId,
+                trustLevel: 'medium', // Implied trust from group membership
+                reason: `Group membership: ${group.name}`
+              });
+              console.log(`[TopicGroupManager] ✅ Implied trust for member ${String(memberId).substring(0, 8)}`);
+            } catch (error: any) {
+              // Trust may already exist - that's fine
+              if (!error.message?.includes('already')) {
+                console.warn(`[TopicGroupManager] Could not set trust for member ${String(memberId).substring(0, 8)}:`, error.message);
+              }
+            }
+          }
+        }
+      } else if (paranoiaLevel > 0) {
+        console.log(`[TopicGroupManager] Paranoia level ${paranoiaLevel}: skipping implied trust - manual confirmation required`);
+      } else {
+        console.warn(`[TopicGroupManager] No trustPlan available - cannot establish implied trust for group members`);
+      }
 
       // Cache the group
       this.conversationGroups.set(topicId, groupIdHash);

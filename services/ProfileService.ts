@@ -83,6 +83,24 @@ export class ProfileService {
   }
 
   /**
+   * Get user's current mood
+   */
+  async getMood(personId: SHA256IdHash<Person>): Promise<{ mood: string | null; color: string | null }> {
+    try {
+      const result = await getObjectByIdHash<AvatarPreference>(personId as any);
+      if (result && result.obj && result.obj.mood) {
+        return {
+          mood: result.obj.mood,
+          color: getMoodColor(result.obj.mood)
+        };
+      }
+    } catch (e) {
+      // Preference doesn't exist
+    }
+    return { mood: null, color: null };
+  }
+
+  /**
    * Update user's mood (affects avatar color)
    */
   async updateMood(personId: SHA256IdHash<Person>, mood: string): Promise<{ mood: string; color: string }> {

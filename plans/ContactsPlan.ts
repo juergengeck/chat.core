@@ -268,7 +268,7 @@ export class ContactsPlan {
           }
 
           allContacts.push({
-            id: personId,
+            id: someone.idHash,  // Use Someone's idHash, not personId
             personId: personId,
             name: displayName,
             email,
@@ -472,7 +472,7 @@ export class ContactsPlan {
    *
    * ASSEMBLY TRIGGER: Case #5 - Store Someone/Profile (Identity Domain)
    */
-  async addContact(personInfo: { name: string; email: string }): Promise<{ success: boolean; contact?: any; error?: string }> {
+  async addContact(personInfo: { name: string; email: string; modelId?: string }): Promise<{ success: boolean; contact?: any; error?: string }> {
     const userId = this.nodeOneCore.ownerId || this.nodeOneCore.leuteModel?.myMainIdentity();
 
     // Wrap operation with Story + Assembly recording
@@ -523,12 +523,37 @@ export class ContactsPlan {
   /**
    * Internal implementation of addContact (wrapped by Story+Assembly recording)
    */
-  private async addContactInternal(personInfo: { name: string; email: string }): Promise<{ success: boolean; contact?: any; error?: string }> {
+  private async addContactInternal(personInfo: { name: string; email: string; modelId?: string }): Promise<{ success: boolean; contact?: any; error?: string }> {
     try {
       if (!this.nodeOneCore.leuteModel) {
         throw new Error('Leute model not initialized');
       }
 
+      // AI contact: delegate to AIAssistantPlan which properly registers in both
+      // AIManager (aiByPerson cache) and LLMObjectManager (llmObjects cache)
+      if (personInfo.modelId && this.nodeOneCore.aiAssistantModel) {
+        console.log(`[ContactsPlan] Creating AI contact via AIAssistantPlan: ${personInfo.name} (${personInfo.modelId})`);
+
+        // ensureAIForModel creates Person/Profile/Someone AND registers in AIManager
+        const personIdHash = await this.nodeOneCore.aiAssistantModel.ensureAIForModel(
+          personInfo.modelId,
+          personInfo.name,
+          personInfo.email
+        );
+
+        console.log(`[ContactsPlan] AI contact created: ${personIdHash.toString().substring(0, 8)}...`);
+
+        return {
+          success: true,
+          contact: {
+            personHash: personIdHash,
+            isAI: true,
+            modelId: personInfo.modelId
+          }
+        };
+      }
+
+      // Regular contact: create Person/Profile/Someone manually
       // Create Person object with proper type
       const personData: { $type$: 'Person'; email: string; name: string } = {
         $type$: 'Person' as const,
@@ -595,7 +620,8 @@ export class ContactsPlan {
           personHash: personIdHash,
           profileHash: profileIdHash,
           someoneHash: someoneIdHash,
-          person: personData
+          person: personData,
+          isAI: false
         }
       };
     } catch (error) {
@@ -942,8 +968,8 @@ export class ContactsPlan {
   /**
    * Get all profiles for a Someone contact
    *
-   * Uses LeuteModel.getSomeone() to find the Someone, then
-   * SomeoneModel.profiles() to get all ProfileModel instances.
+   * Takes the Someone's idHash (Contact.id) and loads profiles directly.
+   * Falls back to personId lookup for backwards compatibility.
    */
   async getProfilesForSomeone(request: { personId: string }): Promise<{ success: boolean; profiles?: any[]; error?: string }> {
     try {
@@ -951,8 +977,20 @@ export class ContactsPlan {
         return { success: false, error: 'Leute model not initialized' };
       }
 
-      const personId = request.personId as SHA256IdHash<Person>;
-      const someone = await this.nodeOneCore.leuteModel.getSomeone(personId);
+      const id = request.personId;  // This is now the Someone idHash (Contact.id)
+
+      // Get all contacts (me + others)
+      const me = await this.nodeOneCore.leuteModel.me();
+      const others = await this.nodeOneCore.leuteModel.others();
+      const allContacts = [me, ...others];
+
+      // Find the Someone with matching idHash
+      let someone = allContacts.find((s: any) => s.idHash === id);
+
+      // Backwards compatibility: if not found by idHash, try as personId
+      if (!someone) {
+        someone = await this.nodeOneCore.leuteModel.getSomeone(id as SHA256IdHash<Person>);
+      }
 
       if (!someone) {
         return { success: false, error: 'Contact not found' };
@@ -961,9 +999,11 @@ export class ContactsPlan {
       // Get main profile for comparison
       const mainProfile = await someone.mainProfile();
       const mainProfileIdHash = mainProfile?.idHash;
+      console.log(`[ContactsPlan] mainProfile idHash: ${mainProfileIdHash?.substring(0, 8)}`);
 
       // Get all profiles - returns Promise<ProfileModel[]>, not async iterator
       const profileModels = await someone.profiles();
+      console.log(`[ContactsPlan] Found ${profileModels?.length || 0} profiles`);
       const profiles: any[] = [];
 
       for (const profile of profileModels) {
