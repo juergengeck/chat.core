@@ -13,6 +13,8 @@ import type { Person } from '@refinio/one.core/lib/recipes.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import type ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
+import type { Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
 
 /**
  * Storage functions for TopicGroupManager (to avoid module duplication in Vite worker)
@@ -26,6 +28,24 @@ export interface TopicGroupManagerStorageDeps {
   createAccess: (accessRequests: any[]) => Promise<any>;
   calculateIdHashOfObj: (obj: any) => Promise<SHA256IdHash<any>>;
   calculateHashOfObj: (obj: any) => Promise<SHA256Hash<any>>;
+}
+
+/**
+ * Pending group share data for mesh completion.
+ * Stored after group creation to share with participants when they connect.
+ */
+export interface PendingGroupShare {
+  topicId: string;
+  groupIdHash: SHA256IdHash<Group>;
+  hashGroupHash: SHA256Hash<HashGroup>;
+  certHashes: {
+    certificate: SHA256Hash<any>;
+    signature: SHA256Hash<any>;
+    license: SHA256Hash<any>;
+  };
+  allParticipants: SHA256IdHash<Person>[];
+  sharedTo: Set<SHA256IdHash<Person>>;
+  createdAt: number;
 }
 
 /**
@@ -48,6 +68,7 @@ export interface OneCoreInstance {
   channelManager: ChannelManager;
   topicModel: TopicModel;
   leuteModel: LeuteModel;
+  connectionsModel?: ConnectionsModel;
   aiAssistantModel?: any; // AIAssistantHandler
   paranoiaLevel?: 0 | 1; // 0 = implied trust (default), 1 = manual confirmation required
 }
@@ -58,6 +79,7 @@ export class TopicGroupManager {
   private storageDeps: TopicGroupManagerStorageDeps;
   private trustPlan?: any; // TrustPlan for auto-trust assignment on group receive
   private allowedGroups: Set<SHA256IdHash<any>>; // Groups we created and allow sharing
+  private pendingGroupShares: Map<string, PendingGroupShare>; // topicId -> pending share data
 
   constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps, trustPlan?: any) {
     this.oneCore = oneCore;
@@ -65,6 +87,7 @@ export class TopicGroupManager {
     this.trustPlan = trustPlan;
     this.conversationGroups = new Map(); // topicId -> groupIdHash
     this.allowedGroups = new Set(); // Groups we allow to share via CHUM
+    this.pendingGroupShares = new Map(); // topicId -> pending share data for mesh completion
   }
 
   /**
@@ -1464,6 +1487,150 @@ export class TopicGroupManager {
     } catch (error) {
       console.error(`[TopicGroupManager] Failed to ensure P2P channels:`, error);
     }
+  }
+
+  // ######## MESH PROPAGATION METHODS ########
+
+  /**
+   * Get all pending group shares where the given person is a participant
+   * but hasn't received the group yet.
+   *
+   * Used by ConnectionPlan to share pending groups when a new P2P connection forms.
+   *
+   * @param personId - The person to check
+   * @returns Array of pending shares where person is a member but hasn't received
+   */
+  getGroupsContainingPerson(personId: SHA256IdHash<Person>): PendingGroupShare[] {
+    const result: PendingGroupShare[] = [];
+
+    for (const pending of this.pendingGroupShares.values()) {
+      // Check if person is in allParticipants but not in sharedTo
+      if (
+        pending.allParticipants.includes(personId) &&
+        !pending.sharedTo.has(personId)
+      ) {
+        result.push(pending);
+      }
+    }
+
+    console.log(`[TopicGroupManager] getGroupsContainingPerson(${personId.substring(0, 8)}): found ${result.length} pending groups`);
+    return result;
+  }
+
+  /**
+   * Get a pending group share by topic ID.
+   *
+   * @param topicId - The topic ID
+   * @returns The pending share or undefined
+   */
+  getPendingGroupShare(topicId: string): PendingGroupShare | undefined {
+    return this.pendingGroupShares.get(topicId);
+  }
+
+  /**
+   * Share group data to a specific participant (for mesh completion).
+   *
+   * Creates Access objects for certificates, HashGroup, and Group to the participant.
+   * CHUM will then sync these objects to the peer.
+   *
+   * @param personId - The person to share to
+   * @param pending - The pending share data
+   */
+  async shareGroupToParticipant(
+    personId: SHA256IdHash<Person>,
+    pending: PendingGroupShare
+  ): Promise<void> {
+    console.log(`[TopicGroupManager] shareGroupToParticipant: Sharing group ${pending.topicId} to ${personId.substring(0, 8)}`);
+
+    // Share certificates first
+    await this.storageDeps.createAccess([
+      {
+        object: pending.certHashes.certificate,
+        person: [personId],
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        object: pending.certHashes.signature,
+        person: [personId],
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        object: pending.certHashes.license,
+        person: [personId],
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      }
+    ]);
+
+    console.log(`[TopicGroupManager] ✅ Shared certificates to ${personId.substring(0, 8)}`);
+
+    // Wait for cert propagation
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // Share HashGroup and Group
+    await this.storageDeps.createAccess([
+      {
+        object: pending.hashGroupHash,
+        person: [personId],
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        id: pending.groupIdHash,
+        person: [personId],
+        group: [],
+        mode: SET_ACCESS_MODE.ADD
+      }
+    ]);
+
+    console.log(`[TopicGroupManager] ✅ Shared HashGroup and Group to ${personId.substring(0, 8)}`);
+
+    // Mark as shared
+    pending.sharedTo.add(personId);
+
+    // Check if mesh complete
+    if (this.isMeshComplete(pending.topicId)) {
+      console.log(`[TopicGroupManager] 🎉 Mesh complete for topic ${pending.topicId}`);
+      // Could emit an event or create journal entry here
+    }
+  }
+
+  /**
+   * Check if all participants have received the group.
+   *
+   * @param topicId - The topic ID
+   * @returns true if all participants in sharedTo
+   */
+  isMeshComplete(topicId: string): boolean {
+    const pending = this.pendingGroupShares.get(topicId);
+    if (!pending) return true;
+
+    return pending.allParticipants.every(p => pending.sharedTo.has(p));
+  }
+
+  /**
+   * Get currently connected participants from the list.
+   *
+   * Uses ConnectionsModel.getActiveConnectionPersonIds() to filter participants.
+   *
+   * @param participants - Full list of participants
+   * @returns Participants who have active CHUM connections
+   */
+  getConnectedParticipants(participants: SHA256IdHash<Person>[]): SHA256IdHash<Person>[] {
+    if (!this.oneCore.connectionsModel) {
+      console.warn('[TopicGroupManager] No connectionsModel available, returning all participants');
+      return participants;
+    }
+
+    const connectedPersonIds = this.oneCore.connectionsModel.getActiveConnectionPersonIds();
+    const connected = participants.filter(p =>
+      p === this.oneCore.ownerId || connectedPersonIds.includes(p)
+    );
+
+    console.log(`[TopicGroupManager] getConnectedParticipants: ${connected.length}/${participants.length} connected`);
+    return connected;
   }
 }
 
