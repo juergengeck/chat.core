@@ -636,31 +636,38 @@ export class TopicGroupManager {
     console.log(`[TopicGroupManager] ✅ Signature: ${String(certResult.signature.hash).substring(0, 8)}, License: ${String(certResult.license.hash).substring(0, 8)}`);
 
     // PROTOCOL: Share certificate objects P2P with each participant BEFORE sharing the Group
-    console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing certificates P2P with ${allParticipants.length} participants`);
+    // Only share to CONNECTED participants - others receive via mesh completion when they connect
+    const connectedParticipants = this.getConnectedParticipants(allParticipants);
+    const pendingParticipants = allParticipants.filter(p => !connectedParticipants.includes(p));
 
-    // Step 1: Share certificates FIRST (P2P to each participant)
+    console.log(`[TopicGroupManager] 🔐 CERTIFICATE SHARING PROTOCOL - Sharing to ${connectedParticipants.length}/${allParticipants.length} connected participants`);
+    if (pendingParticipants.length > 0) {
+      console.log(`[TopicGroupManager] 📋 ${pendingParticipants.length} participants pending mesh completion: ${pendingParticipants.map(p => String(p).substring(0, 8)).join(', ')}`);
+    }
+
+    // Step 1: Share certificates FIRST (P2P to CONNECTED participants only)
     await this.storageDeps.createAccess([
       {
         object: certResult.certificate.hash,
-        person: allParticipants,
+        person: connectedParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       },
       {
         object: certResult.signature.hash,
-        person: allParticipants,
+        person: connectedParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       },
       {
         object: certResult.license.hash,
-        person: allParticipants,
+        person: connectedParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       }
     ]);
 
-    console.log(`[TopicGroupManager] ✅ Step 1: Shared certificates P2P with all participants`);
+    console.log(`[TopicGroupManager] ✅ Step 1: Shared certificates P2P with ${connectedParticipants.length} connected participants`);
 
     // Step 2: Wait for certificate propagation via CHUM
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -673,20 +680,38 @@ export class TopicGroupManager {
     await this.storageDeps.createAccess([
       {
         object: storedHashGroup.hash,  // UNVERSIONED - use 'object' for Access
-        person: allParticipants,
+        person: connectedParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       },
       {
         id: groupIdHash,  // VERSIONED - use 'id' for IdAccess
-        person: allParticipants,
+        person: connectedParticipants,
         group: [],
         mode: SET_ACCESS_MODE.ADD
       }
     ]);
 
-    console.log(`[TopicGroupManager] ✅ Step 3: Shared HashGroup and Group (participants will validate certificate)`);
-    console.log(`[TopicGroupManager] ✅ CERTIFICATE SHARING PROTOCOL COMPLETE`);
+    console.log(`[TopicGroupManager] ✅ Step 3: Shared HashGroup and Group to connected participants`);
+
+    // Step 4: Store PendingGroupShare for mesh completion
+    const pendingShare: PendingGroupShare = {
+      topicId,
+      groupIdHash,
+      hashGroupHash: storedHashGroup.hash,
+      certHashes: {
+        certificate: certResult.certificate.hash,
+        signature: certResult.signature.hash,
+        license: certResult.license.hash
+      },
+      allParticipants: [...allParticipants],
+      sharedTo: new Set(connectedParticipants),
+      createdAt: Date.now()
+    };
+    this.pendingGroupShares.set(topicId, pendingShare);
+
+    console.log(`[TopicGroupManager] ✅ Step 4: Stored PendingGroupShare for mesh completion`);
+    console.log(`[TopicGroupManager] ✅ CERTIFICATE SHARING PROTOCOL COMPLETE (${connectedParticipants.length} immediate, ${pendingParticipants.length} pending)`);
 
     // Create the topic using TopicModel
     if (!this.oneCore.topicModel) {
