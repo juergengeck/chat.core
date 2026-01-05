@@ -18,6 +18,8 @@ import {
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { ensureIdHash, SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import { getDefaultKeys } from '@refinio/one.core/lib/keychain/keychain.js';
+import { createAccess } from '@refinio/one.core/lib/access.js';
+import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 // StoryFactory type (defined locally to avoid moduleResolution issues)
 interface StoryFactory {
   recordExecution(context: any, operation: () => Promise<any>): Promise<{ result: any; storyId?: any; assemblyId?: any }>;
@@ -781,6 +783,15 @@ export class ContactsPlan {
       // Store using one.core API
       const result = await storeVersionedObject(group);
 
+      // Grant access via HashGroup - members of this group can receive the Group object via CHUM
+      console.log(`[ContactsPlan] Granting access to Group ${String(result.idHash).substring(0, 8)} via HashGroup ${String(hashGroup.hash).substring(0, 8)}`);
+      await createAccess([{
+        id: result.idHash,
+        person: [],
+        group: [hashGroup.hash],  // Access tied to HashGroup membership
+        mode: SET_ACCESS_MODE.ADD
+      }]);
+
       return {
         success: true,
         group: {
@@ -815,7 +826,7 @@ export class ContactsPlan {
       }
 
       // Create new HashGroup with updated members
-      const newHashGroup = await storeUnversionedObject({
+      const newHashGroup = await storeUnversionedObject<HashGroup<Person>>({
         $type$: 'HashGroup',
         person: members
       });
@@ -827,6 +838,15 @@ export class ContactsPlan {
         name: group.name,
         hashGroup: newHashGroup.hash
       });
+
+      // Grant access via the new HashGroup (contains all members including new ones)
+      console.log(`[ContactsPlan] Granting access to Group ${String(groupIdHash).substring(0, 8)} via updated HashGroup ${String(newHashGroup.hash).substring(0, 8)}`);
+      await createAccess([{
+        id: groupIdHash,
+        person: [],
+        group: [newHashGroup.hash],  // Access tied to updated HashGroup membership
+        mode: SET_ACCESS_MODE.ADD
+      }]);
 
       return { success: true };
     } catch (error) {
