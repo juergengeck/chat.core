@@ -1,180 +1,155 @@
 /**
  * Topic Group Manager (Platform-Agnostic)
- * Manages group creation for topics with proper participants
  *
- * This is pure business logic that works on both Node.js and browser platforms.
- * Platform-specific concerns are handled via dependency injection.
+ * Simplified manager that uses Topic as the parent object for sharing.
+ * CHUM follows all references from Topic automatically:
+ *   Topic → channel (ChannelInfo) → participants (HashGroup)
+ *        → channelCertificate (AffirmationCertificate) → License, Signature
+ *
+ * No manual sharing logic needed - share Topic, CHUM syncs the tree.
  */
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Person } from '@refinio/one.core/lib/recipes.js';
+import type { OneVersionedObjectTypes, OneUnversionedObjectTypes, Person, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import type { VersionedObjectResult } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import type { UnversionedObjectResult } from '@refinio/one.core/lib/storage-unversioned-objects.js';
+import type { SetAccessParam } from '@refinio/one.core/lib/access.js';
 import type ChannelManager from '@refinio/one.models/lib/models/ChannelManager.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
 import type LeuteModel from '@refinio/one.models/lib/models/Leute/LeuteModel.js';
+import type ConnectionsModel from '@refinio/one.models/lib/models/ConnectionsModel.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 /**
  * Storage functions for TopicGroupManager (to avoid module duplication in Vite worker)
  */
 export interface TopicGroupManagerStorageDeps {
-    storeVersionedObject: (obj: any) => Promise<any>;
-    storeUnversionedObject: (obj: any) => Promise<any>;
-    getObjectByIdHash: (idHash: SHA256IdHash<any>) => Promise<any>;
-    getObject: (hash: SHA256Hash<any>) => Promise<any>;
-    getAllOfType: (type: string) => Promise<any[]>;
-    createAccess: (accessRequests: any[]) => Promise<any>;
-    calculateIdHashOfObj: (obj: any) => Promise<SHA256IdHash<any>>;
-    calculateHashOfObj: (obj: any) => Promise<SHA256Hash<any>>;
+    storeVersionedObject: <T extends OneVersionedObjectTypes>(obj: T) => Promise<VersionedObjectResult<T>>;
+    storeUnversionedObject: <T extends OneUnversionedObjectTypes>(obj: T) => Promise<UnversionedObjectResult<T>>;
+    getObjectByIdHash: <T extends OneVersionedObjectTypes>(idHash: SHA256IdHash<T>) => Promise<VersionedObjectResult<T>>;
+    getObject: <T extends OneUnversionedObjectTypes>(hash: SHA256Hash<T>) => Promise<T>;
+    createAccess: (accessRequests: SetAccessParam[]) => Promise<void>;
+    calculateIdHashOfObj: <T extends OneVersionedObjectTypes>(obj: T) => Promise<SHA256IdHash<T>>;
+    calculateHashOfObj: <T extends OneUnversionedObjectTypes>(obj: T) => Promise<SHA256Hash<T>>;
+}
+/** Trust plan interface for setting trust levels */
+export interface TrustPlan {
+    setTrustLevel(request: {
+        personId: SHA256IdHash<Person>;
+        trustLevel: string;
+        reason?: string;
+    }): Promise<void>;
+}
+/** AI Assistant model interface */
+export interface AIAssistantModel {
+    getAIPersonForTopic(topicId: string): SHA256IdHash<Person> | undefined;
+    getModelIdForPersonId(personId: SHA256IdHash<Person>): string | undefined;
 }
 /**
  * Minimal interface for ONE.core instance
- * Works for both NodeOneCore and WorkerOneCore
  */
 export interface OneCoreInstance {
     ownerId: SHA256IdHash<Person>;
     channelManager: ChannelManager;
     topicModel: TopicModel;
     leuteModel: LeuteModel;
-    aiAssistantModel?: any;
+    connectionsModel?: ConnectionsModel;
+    aiAssistantModel?: AIAssistantModel;
+    paranoiaLevel?: 0 | 1;
+}
+/**
+ * Result from creating a topic
+ */
+export interface CreateTopicResult {
+    topic: Topic;
+    topicIdHash: SHA256IdHash<Topic>;
+    channelInfoIdHash: SHA256IdHash<ChannelInfo>;
+    participantsHash: SHA256Hash<HashGroup>;
 }
 export declare class TopicGroupManager {
     private oneCore;
-    private conversationGroups;
     private storageDeps;
-    private allowedGroups;
-    constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps);
+    private trustPlan?;
+    private topicCache;
+    constructor(oneCore: OneCoreInstance, storageDeps: TopicGroupManagerStorageDeps, trustPlan?: TrustPlan);
     /**
-     * Get cached group for a topic (internal use by GroupPlan)
-     */
-    getCachedGroupForTopic(topicId: string): SHA256IdHash<any> | undefined;
-    /**
-     * Create an outbound objectFilter for CHUM sync (what we SEND to peers)
-     * Simple allowlist: only share Groups we created
+     * Create a group topic and share it with participants.
      *
-     * @returns ObjectFilter function for use in ConnectionsModel config
-     */
-    createObjectFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean>;
-    /**
-     * Create an inbound importFilter for CHUM sync (what we ACCEPT from peers)
-     * Validates Groups have cryptographic certificates from trusted people
+     * Architecture:
+     * 1. TopicModel creates Topic → ChannelInfo → HashGroup
+     * 2. We create AffirmationCertificate for the ChannelInfo
+     * 3. Update Topic with channelCertificate reference
+     * 4. Share Topic to all participants
+     * 5. CHUM follows all references and syncs the complete tree
      *
-     * @returns ImportFilter function for use in ConnectionsModel config
+     * @param topicName - Display name for the topic
+     * @param topicId - Unique ID for the topic
+     * @param participants - Person IDs to include
      */
-    createImportFilter(): (hash: SHA256Hash<any> | SHA256IdHash<any>, type: string) => Promise<boolean>;
+    createGroupTopic(topicName: string, topicId: string, participants?: SHA256IdHash<Person>[]): Promise<CreateTopicResult>;
     /**
-     * Helper to create a properly formatted Group object
-     * @private
+     * Get cached topic for a conversation
      */
-    private createGroupObject;
+    getCachedTopicForConversation(topicId: string): SHA256IdHash<Topic> | undefined;
     /**
-     * Check if a conversation has a group
+     * Check if a conversation has a topic
      */
-    hasConversationGroup(conversationId: string): boolean;
+    hasConversationTopic(conversationId: string): boolean;
     /**
-     * Check if a conversation is P2P (2 participants)
+     * Get participants for a topic from its ChannelInfo
      */
-    isP2PConversation(conversationId: any): any;
+    getTopicParticipants(topicId: string): Promise<SHA256IdHash<Person>[]>;
     /**
-     * Create or get a conversation group for a topic
-     * This group includes: browser owner, node owner, and AI assistant
+     * Add participants to an existing topic
      */
-    getOrCreateConversationGroup(topicId: any, aiPersonId?: null): Promise<unknown>;
+    addParticipantsToTopic(topicId: string, newParticipants: SHA256IdHash<Person>[]): Promise<void>;
     /**
-     * Get default participants for a conversation
-     * This returns the minimal set - actual conversations will add more participants
+     * Create a P2P topic (delegates to TopicModel)
      */
-    getDefaultParticipants(aiPersonId?: null): Promise<unknown>;
+    createP2PTopic(topicName: string, topicId: string, participants: [SHA256IdHash<Person>, SHA256IdHash<Person>]): Promise<Topic>;
     /**
-     * Add participants to a conversation group
-     * @deprecated Use addParticipantsToTopic() instead
+     * Ensure P2P channels exist for a peer
      */
-    addParticipantsToGroup(topicId: any, participants: any): Promise<any>;
+    ensureP2PChannelsForPeer(peerPersonId: SHA256IdHash<Person>): Promise<void>;
     /**
-     * Get default AI person ID
+     * Handle a received Topic (when synced via CHUM)
+     * Validates the channelCertificate before accepting
      */
-    getDefaultAIPersonId(): any;
+    handleReceivedTopic(topicIdHash: SHA256IdHash<Topic>, topic: Topic): Promise<boolean>;
     /**
-     * Add a participant to relevant conversation groups
-     * This is called when a CHUM connection is established
-     * For group chats: adds them to groups where they should be a member
-     * For P2P: ensures the P2P conversation structure exists
-     * @param {string} personId - The person ID to add to relevant groups
-     */
-    addParticipantToRelevantGroups(personId: any): Promise<any>;
-    /**
-     * Ensure a participant has access to a group they're a member of
-     */
-    ensureGroupAccess(groupIdHash: any, personId: any): Promise<any>;
-    /**
-     * Add a participant to a specific conversation group
-     * @param {string} topicId - The topic ID
-     * @param {string} groupIdHash - The group's ID hash
-     * @param {string} personId - The person ID to add
-     */
-    addParticipantToGroup(topicId: any, groupIdHash: any, personId: any): Promise<any>;
-    /**
-     * Create a P2P topic following one.leute reference patterns exactly
-     * @param {string} topicName - Display name for the topic
-     * @param {string} topicId - Topic ID in format: personId1<->personId2
-     * @param {Array<string>} participants - Array of exactly 2 person IDs
-     */
-    createP2PTopic(topicName: any, topicId: any, participants: any): Promise<any>;
-    /**
-     * Create a topic with the conversation group - compatible with one.leute architecture
-     * In one.leute: ONE topic ID, MULTIPLE channels (one per participant)
-     * @param {string} topicName - Display name for the topic
-     * @param {string} topicId - Unique ID for the topic
-     * @param {Array<string>} participants - Array of person IDs (humans, AIs, etc) to include
-     * @param {boolean} autoAddChumConnections - Whether to automatically add all CHUM connections (default: false)
-     */
-    createGroupTopic(topicName: string, topicId: string, participants?: SHA256IdHash<Person>[], autoAddChumConnections?: boolean): Promise<unknown>;
-    /**
-     * Add participants to existing topic's group
-     */
-    addParticipantsToTopic(topicId: string, participants: SHA256IdHash<Person>[]): Promise<void>;
-    /**
-     * Query IdAccess objects to find the group for a topic
-     * This is the persistent way to find groups - IdAccess stores the topic→group relationship
-     * @param {string} topicId - The topic ID
-     * @returns {Promise<SHA256IdHash<Group> | null>} The group ID hash or null if not found
-     */
-    getGroupForTopic(topicId: any): Promise<SHA256IdHash<any> | null>;
-    /**
-     * Get all participants for a topic from its group
-     * @param {string} topicId - The topic ID
-     * @returns {Promise<string[]>} Array of participant person IDs
-     */
-    getTopicParticipants(topicId: any): Promise<string[]>;
-    /**
-     * Ensure participant has their own channel for a group they're part of
-     * This should be called when a participant discovers they're in a group
-     * @param {string} topicId - The topic ID
-     * @param {string} groupIdHash - The group's ID hash
-     */
-    ensureParticipantChannel(topicId: any, groupIdHash: any): Promise<any>;
-    /**
-     * Initialize group sync listener
-     * Listens for Group objects received via CHUM and creates channels for them
+     * Initialize Group sync listener (LEGACY)
+     * @deprecated Groups are no longer used - Topics are the parent objects now
      */
     initializeGroupSyncListener(): void;
     /**
-     * Handle a received Group object
-     * Called either from the event listener or explicitly when a group is received
+     * Initialize Topic sync listener
      */
-    handleReceivedGroup(groupIdHash: any, group: any): Promise<void>;
+    initializeTopicSyncListener(): void;
     /**
-     * @deprecated This method is deprecated - use initializeGroupSyncListener() instead
-     * Kept for backwards compatibility
+     * Check if an Access/IdAccess hash is allowed to be sent outbound via CHUM
+     *
+     * With the simplified architecture, all Access/IdAccess from our instance
+     * are allowed since they're created by us for legitimate sharing.
+     *
+     * @param hash - The Access or IdAccess hash to check
      */
+    isAllowedOutbound(_hash: string): boolean;
+    /**
+     * Check if an Access/IdAccess hash is allowed to be accepted inbound via CHUM
+     *
+     * With the simplified architecture, all Access/IdAccess from paired peers
+     * are allowed since pairing establishes trust.
+     *
+     * @param hash - The Access or IdAccess hash to check
+     */
+    isAllowedInbound(_hash: string): boolean;
+    /** @deprecated Use getCachedTopicForConversation instead */
+    getCachedGroupForTopic(topicId: string): SHA256IdHash<any> | undefined;
+    /** @deprecated Groups are no longer used - participants come from ChannelInfo */
+    hasConversationGroup(conversationId: string): boolean;
+    /** @deprecated Use createGroupTopic instead */
+    getOrCreateConversationGroup(topicId: string): Promise<unknown>;
+    /** @deprecated Not needed - CHUM handles sync */
     syncReceivedGroups(): Promise<void>;
-    /**
-     * @deprecated Do not use - creates duplicate conversations
-     * P2P conversations should always use personId1<->personId2 format
-     */
-    ensureP2PChannelsForProfile(someoneId: any, peerPersonId: any): Promise<any>;
-    /**
-     * Ensure channels exist for P2P conversations with a specific peer
-     * This is called when a CHUM connection is established
-     * @param {string} peerPersonId - The peer's person ID
-     */
-    ensureP2PChannelsForPeer(peerPersonId: any): Promise<any>;
 }
 export default TopicGroupManager;
 //# sourceMappingURL=TopicGroupManager.d.ts.map

@@ -71,6 +71,24 @@ export class ProfileService {
         return color;
     }
     /**
+     * Get user's current mood
+     */
+    async getMood(personId) {
+        try {
+            const result = await getObjectByIdHash(personId);
+            if (result && result.obj && result.obj.mood) {
+                return {
+                    mood: result.obj.mood,
+                    color: getMoodColor(result.obj.mood)
+                };
+            }
+        }
+        catch (e) {
+            // Preference doesn't exist
+        }
+        return { mood: null, color: null };
+    }
+    /**
      * Update user's mood (affects avatar color)
      */
     async updateMood(personId, mood) {

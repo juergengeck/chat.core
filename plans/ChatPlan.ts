@@ -19,11 +19,12 @@ export interface StoryFactory {
   recordExecution(metadata: any, operation: () => Promise<any>): Promise<any>;
 }
 
-// GroupPlan interface for group operations with Story/Assembly tracking
+// GroupPlan interface for topic operations
 export interface GroupPlan {
-  createGroup(request: any): Promise<any>;
-  getGroupForTopic(request: any): Promise<any>;
+  createTopic(request: any): Promise<any>;
+  getTopic(request: any): Promise<any>;
   getTopicParticipants(request: any): Promise<any>;
+  addParticipants(request: any): Promise<any>;
 }
 
 // Request/Response types
@@ -262,10 +263,7 @@ export class ChatPlan {
       this.groupPlan = groupPlan;
     } else if (nodeOneCore.topicGroupManager) {
       // Auto-create GroupPlan
-      this.groupPlan = new GroupPlanImpl(
-        nodeOneCore.topicGroupManager,
-        nodeOneCore
-      );
+      this.groupPlan = new GroupPlanImpl(nodeOneCore.topicGroupManager);
       console.log('[ChatPlan] ✅ Auto-created GroupPlan');
     }
   }
@@ -683,32 +681,30 @@ export class ChatPlan {
       const topicId = `topic-${hashHex.substring(0, 24)}`;
       console.log(`[ChatPlan] Unique topic ID: ${topicId} (from: ${userId.substring(0, 8)}:${name}:${timestamp})`);
 
-      // Create group using GroupPlan (creates Story/Assembly, delegates to TopicGroupManager)
+      // Create topic using GroupPlan (delegates to TopicGroupManager)
       if (this.groupPlan) {
-        const result = await this.groupPlan.createGroup({
+        const result = await this.groupPlan.createTopic({
           topicId,
           topicName: name,
-          participants,
-          autoAddChumConnections: false
+          participants
         });
 
         if (!result.success) {
-          throw new Error(result.error || 'Group creation failed');
+          throw new Error(result.error || 'Topic creation failed');
         }
 
-        console.error(`[ChatPlan] ✅ Created group via GroupPlan - Story: ${result.storyIdHash?.substring(0, 8)}, Assembly: ${result.assemblyIdHash?.substring(0, 8)}`);
+        console.log(`[ChatPlan] ✅ Created topic via GroupPlan - topicIdHash: ${result.topicIdHash?.substring(0, 8)}`);
       } else {
-        // Fallback: Direct TopicGroupManager call (no Story/Assembly)
+        // Fallback: Direct TopicGroupManager call
         await this.nodeOneCore.topicGroupManager.createGroupTopic(
           name,
           topicId,
           participants
         );
-        console.error(`[ChatPlan] ⚠️ Created group via TopicGroupManager (no GroupPlan - no Story/Assembly)`);
+        console.log(`[ChatPlan] ✅ Created topic via TopicGroupManager`);
       }
 
-      console.error(`[ChatPlan] 🔍 AFTER createGroup - participants.length: ${participants.length}`);
-      console.error(`[ChatPlan] 🔍 AFTER createGroup - participants:`, participants);
+      console.log(`[ChatPlan] Topic created with ${participants.length} participants`);
 
       // Configure channel for group conversations (one.leute pattern)
       // This ensures Person/Profile objects arriving via CHUM are automatically registered
@@ -850,36 +846,40 @@ export class ChatPlan {
             console.warn(`[ChatPlan] Failed to get idHash for ${topicId}:`, e);
           }
 
-          // Get participants from topic group with enriched data (names)
+          // Get participants from topic's ChannelInfo with enriched data (names)
           // ALSO extract AI model info from participants (if any AI contact is found)
           let participants: any[] = [];
           let aiModelId: string | undefined;
           try {
-            let groupIdHash = null;
+            // Get participants directly from TopicGroupManager (uses ChannelInfo → HashGroup)
+            let participantIds: string[] = [];
 
             if (this.nodeOneCore.topicGroupManager) {
-              groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(topicId);
-              console.log(`[ChatPlan] Topic ${topicId} (${name}) - groupIdHash:`, groupIdHash);
+              try {
+                const ids = await this.nodeOneCore.topicGroupManager.getTopicParticipants(topicId);
+                participantIds = ids.map((id: any) => String(id));
+                console.log(`[ChatPlan] Topic ${topicId} (${name}) - ${participantIds.length} participants`);
+              } catch (e) {
+                console.log(`[ChatPlan] Topic ${topicId} (${name}) - no participants found`);
+              }
             }
 
-            if (!groupIdHash) {
-              console.warn(`[ChatPlan] ⚠️ Topic ${topicId} (${name}) has NO GROUP - using owner as fallback participant`);
-              // Fallback: Add current user as participant when there's no group
-              // This ensures topics always show at least one participant
+            if (participantIds.length === 0) {
+              console.log(`[ChatPlan] Topic ${topicId} (${name}) - using fallback participants`);
+              // Fallback: Add current user as participant
               const currentUserId = this.nodeOneCore.ownerId;
               if (currentUserId) {
                 let ownerName = 'You';
-                let ownerIsAI = false;
 
                 // Try to get the owner's name from LeuteModel
                 if (this.nodeOneCore.leuteModel) {
                   try {
-                    const me: any = await this.nodeOneCore.leuteModel.me();
+                    const me = await this.nodeOneCore.leuteModel.me();
                     if (me) {
-                      const profile: any = await me.mainProfile();
+                      const profile = await me.mainProfile();
                       if (profile) {
-                        const personName = profile.personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
-                        ownerName = personName?.name || profile.name || 'You';
+                        const personName = (profile as any).personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
+                        ownerName = personName?.name || (profile as any).name || 'You';
                       }
                     }
                   } catch (e) {
@@ -893,39 +893,27 @@ export class ChatPlan {
                   if (aiPersonId) {
                     const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(aiPersonId);
                     if (modelId) {
-                      // Add AI as participant
                       participants = [
                         { id: currentUserId, name: ownerName, isLLM: false },
                         { id: aiPersonId, name: modelId, isLLM: true }
                       ];
                       aiModelId = modelId;
                     } else {
-                      participants = [{ id: currentUserId, name: ownerName, isLLM: ownerIsAI }];
+                      participants = [{ id: currentUserId, name: ownerName, isLLM: false }];
                     }
                   } else {
-                    participants = [{ id: currentUserId, name: ownerName, isLLM: ownerIsAI }];
+                    participants = [{ id: currentUserId, name: ownerName, isLLM: false }];
                   }
                 } else {
-                  participants = [{ id: currentUserId, name: ownerName, isLLM: ownerIsAI }];
+                  participants = [{ id: currentUserId, name: ownerName, isLLM: false }];
                 }
-              } else {
-                participants = [];
               }
             } else {
-              console.log(`[ChatPlan] Topic ${topicId} (${name}) - Loading group participants...`);
+              console.log(`[ChatPlan] Topic ${topicId} (${name}) - enriching ${participantIds.length} participants...`);
               const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
-              const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
-              const groupResult = await getObjectByIdHash(groupIdHash);
-              const group = groupResult.obj as Group;
 
-              if (group.hashGroup) {
-                const hashGroup = await getObject(group.hashGroup) as HashGroup;
-                if (hashGroup.person) {
-                  const participantIds = Array.from(hashGroup.person).map(id => String(id));
-
-                  if (participantIds.length > 0) {
-                // Enrich each participant with name and avatar color from Leute model
-                participants = await Promise.all(participantIds.map(async (participantId) => {
+              // Enrich each participant with name and avatar color
+              participants = await Promise.all(participantIds.map(async (participantId) => {
                     let name = 'Unknown';
                     let color: string | undefined;
                     let isAI = false;
@@ -1015,17 +1003,14 @@ export class ChatPlan {
                       }
                     }
 
-                    return {
-                      id: participantId,
-                      name,
-                      isAI,
-                      color
-                    };
-                  }));
-                }
-              }
+                return {
+                  id: participantId,
+                  name,
+                  isAI,
+                  color
+                };
+              }));
             }
-          }
           } catch (error) {
             console.error(`[ChatPlan] Error fetching participants for topic ${topicId}:`, error);
 
@@ -1380,26 +1365,14 @@ export class ChatPlan {
 
       console.log('[ChatPlan] ✅ Added participants to topic, new channel:', updatedTopic.channel?.substring(0, 8));
 
-      // CRITICAL: Also update TopicGroupManager to create versioned Group
-      // This creates proper version history with $versionHash$ for group membership changes
+      // Update TopicGroupManager to add participants (updates Topic → ChannelInfo → HashGroup)
       if (this.nodeOneCore.topicGroupManager) {
-        console.log('[ChatPlan] Updating TopicGroupManager with new participants for version history');
+        console.log('[ChatPlan] Updating TopicGroupManager with new participants');
         await this.nodeOneCore.topicGroupManager.addParticipantsToTopic(
           request.conversationId,
           request.participantIds as any[]
         );
-        console.log('[ChatPlan] ✅ TopicGroupManager updated with versioned group');
-
-        // CRITICAL: Link the updated Group to the NEW channel
-        // getGroupForTopic uses IdAccess reverse maps on topic.channel, so we must update it
-        const groupIdHash = await this.nodeOneCore.topicGroupManager.getGroupForTopic(request.conversationId);
-        if (groupIdHash && updatedTopic.channel !== topic.channel) {
-          console.log('[ChatPlan] Linking group to new channel:', updatedTopic.channel?.substring(0, 8));
-          await this.nodeOneCore.topicModel.addGroupToTopic(groupIdHash, updatedTopic);
-          console.log('[ChatPlan] ✅ Group linked to new channel');
-        }
-      } else {
-        console.warn('[ChatPlan] TopicGroupManager not available - group version history will not be updated');
+        console.log('[ChatPlan] ✅ TopicGroupManager updated');
       }
 
       // Detect if any new participant is AI and register the topic

@@ -2,8 +2,9 @@ import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
 import type { Person } from '@refinio/one.core/lib/recipes.js';
 /**
  * Grant a specific person access to a channel
+ * Now uses participantsHash instead of channelId
  */
-export declare function grantChannelAccessToPerson(channelId: string, channelOwner: SHA256IdHash<Person> | undefined, personId: SHA256IdHash<Person>): Promise<boolean>;
+export declare function grantChannelAccessToPerson(channelInfoIdHash: SHA256IdHash<any>, personId: SHA256IdHash<Person>): Promise<boolean>;
 /**
  * Grant comprehensive access to a channel message
  * This includes the channelEntry, data, and creationTime objects

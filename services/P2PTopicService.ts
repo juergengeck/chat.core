@@ -128,9 +128,6 @@ export async function autoCreateP2PTopicAfterPairing(params: {
   console.log('[P2PTopicService]   Local:', localPersonId?.substring(0, 8))
   console.log('[P2PTopicService]   Remote:', remotePersonId?.substring(0, 8))
 
-  // Wait a moment for trust establishment and data persistence
-  await new Promise(resolve => setTimeout(resolve, 3000))
-
   try {
     // Create the P2P topic
     const { topicRoom, wasCreated } = await createP2PTopic(topicModel, localPersonId, remotePersonId)
@@ -174,10 +171,7 @@ export async function autoCreateP2PTopicAfterPairing(params: {
   } catch (error) {
     console.error('[P2PTopicService] Failed to auto-create P2P topic:', error)
 
-    // If we fail, it might be because the other peer is also trying to create it
-    // Wait and try to enter the room instead
-    await new Promise(resolve => setTimeout(resolve, 3000))
-
+    // If we fail, try to enter the room (other peer may have created it)
     try {
       const channelId = localPersonId < remotePersonId
         ? `${localPersonId}<->${remotePersonId}`

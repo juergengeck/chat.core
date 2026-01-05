@@ -21,6 +21,13 @@ export declare class ProfileService {
      */
     getAvatarColor(personId: string): Promise<string>;
     /**
+     * Get user's current mood
+     */
+    getMood(personId: SHA256IdHash<Person>): Promise<{
+        mood: string | null;
+        color: string | null;
+    }>;
+    /**
      * Update user's mood (affects avatar color)
      */
     updateMood(personId: SHA256IdHash<Person>, mood: string): Promise<{

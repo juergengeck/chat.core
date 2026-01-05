@@ -130,6 +130,7 @@ export declare class ContactsPlan {
     addContact(personInfo: {
         name: string;
         email: string;
+        modelId?: string;
     }): Promise<{
         success: boolean;
         contact?: any;
@@ -208,8 +209,8 @@ export declare class ContactsPlan {
     /**
      * Get all profiles for a Someone contact
      *
-     * Uses LeuteModel.getSomeone() to find the Someone, then
-     * SomeoneModel.profiles() to get all ProfileModel instances.
+     * Takes the Someone's idHash (Contact.id) and loads profiles directly.
+     * Falls back to personId lookup for backwards compatibility.
      */
     getProfilesForSomeone(request: {
         personId: string;

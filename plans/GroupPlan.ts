@@ -1,36 +1,45 @@
 /**
  * Group Plan (Pure Business Logic)
  *
- * Transport-agnostic plan for conversation group operations.
- * Delegates to TopicGroupManager for low-level Group creation.
+ * Transport-agnostic plan for conversation topic operations.
+ * Delegates to TopicGroupManager which uses Topic as the parent object.
+ *
+ * Architecture:
+ *   Topic → channel (ChannelInfo) → participants (HashGroup)
+ *        → channelCertificate (AffirmationCertificate)
+ *
+ * CHUM follows all references automatically when Topic is shared.
  */
 
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Group, Person } from '@refinio/one.core/lib/recipes.js';
-import type { TopicGroupManager } from '../models/TopicGroupManager.js';
+import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Person, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
+import type { TopicGroupManager, CreateTopicResult } from '../models/TopicGroupManager.js';
 
-// Request/Response types
-export interface CreateGroupRequest {
+export interface CreateTopicRequest {
   topicId: string;
   topicName: string;
   participants: SHA256IdHash<Person>[];
-  autoAddChumConnections?: boolean;
 }
 
-export interface CreateGroupResponse {
+export interface CreateTopicResponse {
   success: boolean;
-  groupIdHash?: SHA256IdHash<Group>;
+  topicIdHash?: SHA256IdHash<Topic>;
+  channelInfoIdHash?: SHA256IdHash<ChannelInfo>;
+  participantsHash?: SHA256Hash<HashGroup>;
   error?: string;
 }
 
-export interface GetGroupForTopicRequest {
+export interface GetTopicRequest {
   topicId: string;
 }
 
-export interface GetGroupForTopicResponse {
+export interface GetTopicResponse {
   success: boolean;
-  groupIdHash?: SHA256IdHash<Group>;
-  participants?: string[];
+  topicIdHash?: SHA256IdHash<Topic>;
+  channelInfoIdHash?: SHA256IdHash<ChannelInfo>;
+  participants?: SHA256IdHash<Person>[];
   error?: string;
 }
 
@@ -40,62 +49,61 @@ export interface GetTopicParticipantsRequest {
 
 export interface GetTopicParticipantsResponse {
   success: boolean;
-  participants?: string[];
+  participants?: SHA256IdHash<Person>[];
+  error?: string;
+}
+
+export interface AddParticipantsRequest {
+  topicId: string;
+  participants: SHA256IdHash<Person>[];
+}
+
+export interface AddParticipantsResponse {
+  success: boolean;
   error?: string;
 }
 
 /**
- * GroupPlan - Pure business logic for conversation group operations
+ * GroupPlan - Pure business logic for conversation topic operations
  *
  * Dependencies injected via constructor:
- * - topicGroupManager: Low-level Group/Topic operations
- * - nodeOneCore: ONE.core instance for owner/instanceVersion
+ * - topicGroupManager: Topic/ChannelInfo operations
  */
 export class GroupPlan {
   static get planId(): string { return 'group'; }
   static get planName(): string { return 'Group'; }
-  static get description(): string { return 'Manages conversation groups'; }
-  static get version(): string { return '1.0.0'; }
+  static get description(): string { return 'Manages conversation topics via Topic/ChannelInfo sharing'; }
+  static get version(): string { return '3.0.0'; }
 
   private topicGroupManager: TopicGroupManager;
-  private nodeOneCore: any;
 
-  constructor(
-    topicGroupManager: TopicGroupManager,
-    nodeOneCore: any
-  ) {
+  constructor(topicGroupManager: TopicGroupManager) {
     this.topicGroupManager = topicGroupManager;
-    this.nodeOneCore = nodeOneCore;
   }
 
   /**
-   * Create a conversation group for a topic
+   * Create a conversation topic with participants
    */
-  async createGroup(request: CreateGroupRequest): Promise<CreateGroupResponse> {
-    console.log(`[GroupPlan] Creating group for topic ${request.topicId} with ${request.participants.length} participants`);
+  async createTopic(request: CreateTopicRequest): Promise<CreateTopicResponse> {
+    console.log(`[GroupPlan] Creating topic ${request.topicId} with ${request.participants.length} participants`);
 
     try {
-      await this.topicGroupManager.createGroupTopic(
+      const result: CreateTopicResult = await this.topicGroupManager.createGroupTopic(
         request.topicName,
         request.topicId,
-        request.participants,
-        request.autoAddChumConnections || false
+        request.participants
       );
 
-      const groupIdHash = this.topicGroupManager.getCachedGroupForTopic(request.topicId);
-
-      if (!groupIdHash) {
-        throw new Error(`Group creation failed - no groupIdHash in cache for topic ${request.topicId}`);
-      }
-
-      console.log(`[GroupPlan] Created group ${String(groupIdHash).substring(0, 8)} for topic ${request.topicId}`);
+      console.log(`[GroupPlan] ✅ Created topic ${String(result.topicIdHash).substring(0, 8)}`);
 
       return {
         success: true,
-        groupIdHash
+        topicIdHash: result.topicIdHash,
+        channelInfoIdHash: result.channelInfoIdHash,
+        participantsHash: result.participantsHash
       };
     } catch (error) {
-      console.error('[GroupPlan] Error creating group:', error);
+      console.error('[GroupPlan] Error creating topic:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -104,16 +112,16 @@ export class GroupPlan {
   }
 
   /**
-   * Get group for a topic
+   * Get topic info for a conversation
    */
-  async getGroupForTopic(request: GetGroupForTopicRequest): Promise<GetGroupForTopicResponse> {
+  async getTopic(request: GetTopicRequest): Promise<GetTopicResponse> {
     try {
-      const groupIdHash = await this.topicGroupManager.getGroupForTopic(request.topicId);
+      const topicIdHash = this.topicGroupManager.getCachedTopicForConversation(request.topicId);
 
-      if (!groupIdHash) {
+      if (!topicIdHash) {
         return {
           success: false,
-          error: `No group found for topic ${request.topicId}`
+          error: `No topic found for topicId ${request.topicId}`
         };
       }
 
@@ -121,11 +129,11 @@ export class GroupPlan {
 
       return {
         success: true,
-        groupIdHash,
+        topicIdHash,
         participants
       };
     } catch (error) {
-      console.error('[GroupPlan] Error getting group for topic:', error);
+      console.error('[GroupPlan] Error getting topic:', error);
       return {
         success: false,
         error: (error as Error).message
@@ -146,6 +154,25 @@ export class GroupPlan {
       };
     } catch (error) {
       console.error('[GroupPlan] Error getting topic participants:', error);
+      return {
+        success: false,
+        error: (error as Error).message
+      };
+    }
+  }
+
+  /**
+   * Add participants to an existing topic
+   */
+  async addParticipants(request: AddParticipantsRequest): Promise<AddParticipantsResponse> {
+    console.log(`[GroupPlan] Adding ${request.participants.length} participants to topic ${request.topicId}`);
+
+    try {
+      await this.topicGroupManager.addParticipantsToTopic(request.topicId, request.participants);
+
+      return { success: true };
+    } catch (error) {
+      console.error('[GroupPlan] Error adding participants:', error);
       return {
         success: false,
         error: (error as Error).message

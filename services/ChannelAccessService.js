@@ -4,22 +4,29 @@
  */
 import { createAccess } from '@refinio/one.core/lib/access.js';
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 /**
- * Grant a specific person access to a channel
+ * Helper to get participantsHash for a set of person IDs
  */
-export async function grantChannelAccessToPerson(channelId, channelOwner, personId) {
+async function getParticipantsHash(participants) {
+    const hashGroup = {
+        $type$: 'HashGroup',
+        person: new Set(participants)
+    };
+    const result = await storeUnversionedObject(hashGroup);
+    return result.hash;
+}
+/**
+ * Grant a specific person access to a channel
+ * Now uses participantsHash instead of channelId
+ */
+export async function grantChannelAccessToPerson(channelInfoIdHash, personId) {
     try {
-        console.log(`[ChannelAccess] Granting channel ${channelId} access to person ${personId?.substring(0, 8)}`);
-        // Calculate the channel info hash
-        const channelInfoHash = await calculateIdHashOfObj({
-            $type$: 'ChannelInfo',
-            id: channelId,
-            owner: channelOwner
-        });
+        console.log(`[ChannelAccess] Granting channel access to person ${personId?.substring(0, 8)}`);
         // Grant direct person-to-person access to ChannelInfo
         await createAccess([{
-                id: channelInfoHash,
+                id: channelInfoIdHash,
                 person: [personId],
                 group: [],
                 mode: SET_ACCESS_MODE.ADD
@@ -169,31 +176,44 @@ export async function setupBrowserNodeChannelAccess(nodeOwnerId, browserPersonId
         // Get all existing channels
         const channelInfos = await channelManager.channels();
         for (const channelInfo of channelInfos) {
-            const channelId = channelInfo.id;
             const channelOwner = channelInfo.owner;
             // Grant access to browser for all Node's channels
             if (channelOwner === nodeOwnerId) {
-                await grantChannelAccessToPerson(channelId, channelOwner, browserPersonId);
+                // Get channelInfoIdHash from the channelInfo
+                const channelInfoIdHash = await calculateIdHashOfObj({
+                    $type$: 'ChannelInfo',
+                    participants: channelInfo.participants,
+                    owner: channelOwner
+                });
+                await grantChannelAccessToPerson(channelInfoIdHash, browserPersonId);
             }
         }
         console.log(`[ChannelAccess] ✅ Processed ${channelInfos.length} channels`);
-        // Specifically ensure "lama" channel has proper access
-        const lamaChannelInfos = await channelManager.getMatchingChannelInfos({
-            channelId: 'lama'
+        // Specifically ensure "lama" channel (personal app data channel) has proper access
+        // Query by participants (nodeOwnerId's personal channel)
+        const participantsHash = await getParticipantsHash([nodeOwnerId]);
+        const appChannelInfos = await channelManager.getMatchingChannelInfos({
+            participants: participantsHash
         });
-        if (lamaChannelInfos.length > 0) {
-            console.log('[ChannelAccess] Found lama channel, ensuring access...');
-            for (const channelInfo of lamaChannelInfos) {
-                await grantChannelAccessToPerson('lama', channelInfo.owner, browserPersonId);
+        if (appChannelInfos.length > 0) {
+            console.log('[ChannelAccess] Found app data channel, ensuring access...');
+            for (const channelInfo of appChannelInfos) {
+                const channelInfoIdHash = await calculateIdHashOfObj({
+                    $type$: 'ChannelInfo',
+                    participants: channelInfo.participants,
+                    owner: channelInfo.owner
+                });
+                await grantChannelAccessToPerson(channelInfoIdHash, browserPersonId);
             }
-            console.log('[ChannelAccess] ✅ LAMA channel access configured');
+            console.log('[ChannelAccess] ✅ App data channel access configured');
         }
         // Note: Topic-specific channels are created by TopicGroupManager for each participant
         console.log('[ChannelAccess] Browser channels will be created per topic by TopicGroupManager');
         // Set up a listener for channel updates to trace CHUM sync
-        channelManager.onUpdated((channelInfoIdHash, channelId, owner, time, data) => {
+        // New callback signature: (channelInfoIdHash, participantsHash, owner, time, data)
+        channelManager.onUpdated((channelInfoIdHash, participantsHash, owner, time, data) => {
             if (owner === browserPersonId) {
-                console.log(`[ChannelAccess] 🔔 Node received update for browser's channel ${channelId}`);
+                console.log(`[ChannelAccess] 🔔 Node received update for browser's channel ${participantsHash?.substring(0, 8)}`);
                 console.log('[ChannelAccess] Owner:', owner?.substring(0, 8));
                 console.log('[ChannelAccess] Data items:', data?.length);
                 console.log('[ChannelAccess] Has messages:', data?.some((d) => d.$type$ === 'ChatMessage'));

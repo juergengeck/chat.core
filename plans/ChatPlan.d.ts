@@ -12,9 +12,10 @@ export interface StoryFactory {
     recordExecution(metadata: any, operation: () => Promise<any>): Promise<any>;
 }
 export interface GroupPlan {
-    createGroup(request: any): Promise<any>;
-    getGroupForTopic(request: any): Promise<any>;
+    createTopic(request: any): Promise<any>;
+    getTopic(request: any): Promise<any>;
     getTopicParticipants(request: any): Promise<any>;
+    addParticipants(request: any): Promise<any>;
 }
 export interface InitializeDefaultChatsRequest {
 }
@@ -262,10 +263,8 @@ export declare class ChatPlan {
     /**
      * Add participants to a conversation
      *
-     * ARCHITECTURE: Different group = Different chat
-     * When participants change, we create a NEW chat with a NEW topicId.
-     * This provides conversation continuity from a user perspective while
-     * maintaining proper group/topic separation.
+     * Updates access rights for the existing topic - does NOT create a new topic.
+     * Topic versions are tracked via ONE.core's versioning system.
      */
     addParticipants(request: AddParticipantsRequest): Promise<AddParticipantsResponse>;
     /**

@@ -20,6 +20,9 @@
     }
   },
   "include": [
+    "types/OneObjectInterfaces.d.ts",
+    "packages/one.models/@OneObjectInterfaces.d.ts",
+    "packages/one.core/@OneObjectInterfaces.d.ts",
     "plans/**/*",
     "services/**/*",
     "models/**/*",

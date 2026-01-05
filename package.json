@@ -19,7 +19,7 @@
     "@lama/core": "*",
     "@refinio/one.core": "*",
     "@refinio/one.models": "*",
-    "@refinio/refinio-api": "*"
+    "@refinio/api": "*"
   },
   "author": "lama.one Team",
   "license": "MIT",

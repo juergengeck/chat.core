@@ -1,30 +1,40 @@
 /**
  * Group Plan (Pure Business Logic)
  *
- * Transport-agnostic plan for conversation group operations.
- * Delegates to TopicGroupManager for low-level Group creation.
+ * Transport-agnostic plan for conversation topic operations.
+ * Delegates to TopicGroupManager which uses Topic as the parent object.
+ *
+ * Architecture:
+ *   Topic → channel (ChannelInfo) → participants (HashGroup)
+ *        → channelCertificate (AffirmationCertificate)
+ *
+ * CHUM follows all references automatically when Topic is shared.
  */
-import type { SHA256IdHash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Group, Person } from '@refinio/one.core/lib/recipes.js';
+import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
+import type { Person, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 import type { TopicGroupManager } from '../models/TopicGroupManager.js';
-export interface CreateGroupRequest {
+export interface CreateTopicRequest {
     topicId: string;
     topicName: string;
     participants: SHA256IdHash<Person>[];
-    autoAddChumConnections?: boolean;
 }
-export interface CreateGroupResponse {
+export interface CreateTopicResponse {
     success: boolean;
-    groupIdHash?: SHA256IdHash<Group>;
+    topicIdHash?: SHA256IdHash<Topic>;
+    channelInfoIdHash?: SHA256IdHash<ChannelInfo>;
+    participantsHash?: SHA256Hash<HashGroup>;
     error?: string;
 }
-export interface GetGroupForTopicRequest {
+export interface GetTopicRequest {
     topicId: string;
 }
-export interface GetGroupForTopicResponse {
+export interface GetTopicResponse {
     success: boolean;
-    groupIdHash?: SHA256IdHash<Group>;
-    participants?: string[];
+    topicIdHash?: SHA256IdHash<Topic>;
+    channelInfoIdHash?: SHA256IdHash<ChannelInfo>;
+    participants?: SHA256IdHash<Person>[];
     error?: string;
 }
 export interface GetTopicParticipantsRequest {
@@ -32,15 +42,22 @@ export interface GetTopicParticipantsRequest {
 }
 export interface GetTopicParticipantsResponse {
     success: boolean;
-    participants?: string[];
+    participants?: SHA256IdHash<Person>[];
+    error?: string;
+}
+export interface AddParticipantsRequest {
+    topicId: string;
+    participants: SHA256IdHash<Person>[];
+}
+export interface AddParticipantsResponse {
+    success: boolean;
     error?: string;
 }
 /**
- * GroupPlan - Pure business logic for conversation group operations
+ * GroupPlan - Pure business logic for conversation topic operations
  *
  * Dependencies injected via constructor:
- * - topicGroupManager: Low-level Group/Topic operations
- * - nodeOneCore: ONE.core instance for owner/instanceVersion
+ * - topicGroupManager: Topic/ChannelInfo operations
  */
 export declare class GroupPlan {
     static get planId(): string;
@@ -48,19 +65,22 @@ export declare class GroupPlan {
     static get description(): string;
     static get version(): string;
     private topicGroupManager;
-    private nodeOneCore;
-    constructor(topicGroupManager: TopicGroupManager, nodeOneCore: any);
+    constructor(topicGroupManager: TopicGroupManager);
     /**
-     * Create a conversation group for a topic
+     * Create a conversation topic with participants
      */
-    createGroup(request: CreateGroupRequest): Promise<CreateGroupResponse>;
+    createTopic(request: CreateTopicRequest): Promise<CreateTopicResponse>;
     /**
-     * Get group for a topic
+     * Get topic info for a conversation
      */
-    getGroupForTopic(request: GetGroupForTopicRequest): Promise<GetGroupForTopicResponse>;
+    getTopic(request: GetTopicRequest): Promise<GetTopicResponse>;
     /**
      * Get participants for a topic
      */
     getTopicParticipants(request: GetTopicParticipantsRequest): Promise<GetTopicParticipantsResponse>;
+    /**
+     * Add participants to an existing topic
+     */
+    addParticipants(request: AddParticipantsRequest): Promise<AddParticipantsResponse>;
 }
 //# sourceMappingURL=GroupPlan.d.ts.map

@@ -7,33 +7,29 @@
  */
 import { createAccess } from '@refinio/one.core/lib/access.js';
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
-import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 /**
  * Grant access to a P2P channel for the two participants
  *
- * @param {string} channelId - The P2P channel ID (format: id1<->id2)
  * @param {string} person1 - First participant's person ID
  * @param {string} person2 - Second participant's person ID
  * @param {Object} channelManager - The ChannelManager instance
  */
-export async function grantP2PChannelAccess(channelId, person1, person2, channelManager) {
-    console.log('[P2PChannelAccess] Granting access for P2P channel:', channelId);
+export async function grantP2PChannelAccess(person1, person2, channelManager) {
+    console.log('[P2PChannelAccess] Granting access for P2P channel');
     console.log('[P2PChannelAccess]   Person 1:', person1?.substring(0, 8));
     console.log('[P2PChannelAccess]   Person 2:', person2?.substring(0, 8));
     try {
         // P2P channels have null owner (shared channel)
         const channelOwner = null;
-        // Ensure the channel exists
-        await channelManager.createChannel(channelId, channelOwner);
-        // Calculate channel info hash
-        const channelIdHash = await calculateIdHashOfObj({
-            $type$: 'ChannelInfo',
-            id: channelId,
-            owner: undefined // null owner becomes undefined in the hash calculation
-        });
+        // Sort participants for consistent ordering
+        const participants = person1 < person2
+            ? [person1, person2]
+            : [person2, person1];
+        // Ensure the channel exists with participants array
+        const channelResult = await channelManager.createChannel(participants, channelOwner);
         // Grant access to both participants individually (not via groups)
         await createAccess([{
-                id: channelIdHash,
+                id: channelResult.channelInfoIdHash,
                 person: [person1, person2], // Only these two people
                 group: [], // NO group access!
                 mode: SET_ACCESS_MODE.ADD
@@ -42,6 +38,7 @@ export async function grantP2PChannelAccess(channelId, person1, person2, channel
         // Note: We should NOT try to grant access to Topic object here
         // Topic is a versioned object and access is handled by TopicModel itself
         // when createOneToOneTopic is called
+        return channelResult;
     }
     catch (error) {
         // Access might already exist, that's ok
@@ -55,18 +52,18 @@ export async function grantP2PChannelAccess(channelId, person1, person2, channel
  * Handle P2P channel creation with proper access control
  * Called when a P2P topic is created
  *
- * @param {string} channelId - The P2P channel ID
+ * @param {string} topicId - The P2P topic ID (format: id1<->id2)
  * @param {Object} leuteModel - The LeuteModel instance
  * @param {Object} channelManager - The ChannelManager instance
  */
-export async function handleP2PChannelCreation(channelId, leuteModel, channelManager) {
-    console.log('[P2PChannelAccess] Handling P2P channel creation:', channelId);
-    // Extract person IDs from channel ID (format: id1<->id2)
-    if (!channelId.includes('<->')) {
+export async function handleP2PChannelCreation(topicId, leuteModel, channelManager) {
+    console.log('[P2PChannelAccess] Handling P2P channel creation for topic:', topicId);
+    // Extract person IDs from topic ID (format: id1<->id2)
+    if (!topicId.includes('<->')) {
         console.log('[P2PChannelAccess] Not a P2P channel, skipping');
         return;
     }
-    const [id1, id2] = channelId.split('<->');
+    const [id1, id2] = topicId.split('<->');
     // Get our own person ID
     const me = await leuteModel.me();
     const myPersonId = await me.mainIdentity();
@@ -85,10 +82,14 @@ export async function handleP2PChannelCreation(channelId, leuteModel, channelMan
         return;
     }
     // Grant access to both participants
-    await grantP2PChannelAccess(channelId, ourId, peerId, channelManager);
+    await grantP2PChannelAccess(ourId, peerId, channelManager);
 }
 /**
  * Monitor for new P2P channels and grant proper access
+ *
+ * NOTE: With the new participants-based ChannelInfo schema, P2P channels are
+ * identified by having exactly 2 participants and null owner. The callback
+ * signature has changed to receive participantsHash instead of channelId.
  *
  * @param {Object} channelManager - The ChannelManager instance
  * @param {Object} leuteModel - The LeuteModel instance
@@ -96,19 +97,19 @@ export async function handleP2PChannelCreation(channelId, leuteModel, channelMan
 export function monitorP2PChannels(channelManager, leuteModel) {
     console.log('[P2PChannelAccess] Monitoring for new P2P channels...');
     // Listen for channel updates
-    channelManager.onUpdated(async (channelInfoIdHash, channelId, channelOwner, timeOfEarliestChange, data) => {
-        // Only process P2P channels
-        if (!channelId.includes('<->')) {
-            return;
-        }
-        // P2P channels should have null owner
+    // New callback signature: (channelInfoIdHash, participantsHash, channelOwner, timeOfEarliestChange, data)
+    channelManager.onUpdated(async (channelInfoIdHash, participantsHash, channelOwner, timeOfEarliestChange, data) => {
+        // P2P channels have null owner (shared channel)
+        // We can't easily determine P2P from participantsHash alone without fetching
+        // Skip if owner is set (not a P2P channel)
         if (channelOwner !== null && channelOwner !== undefined) {
-            console.warn('[P2PChannelAccess] P2P channel has owner - this is unexpected:', channelOwner?.substring(0, 8));
             return;
         }
-        console.log('[P2PChannelAccess] P2P channel update detected:', channelId);
-        // Handle access for this P2P channel
-        await handleP2PChannelCreation(channelId, leuteModel, channelManager);
+        console.log('[P2PChannelAccess] Null-owner channel update detected, participantsHash:', participantsHash?.substring(0, 8));
+        // Note: P2P channel access is now primarily handled during creation
+        // in P2PTopicService. This monitor is for catching any missed cases.
+        // Since we can't extract person IDs from participantsHash without fetching,
+        // we log for debugging purposes.
     });
 }
 //# sourceMappingURL=P2PChannelAccessService.js.map

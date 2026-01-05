@@ -7,7 +7,6 @@
 // Import ONE.core access functions
 import { createAccess } from '@refinio/one.core/lib/access.js';
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
-import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 /**
  * Create a P2P topic for two participants
  *
@@ -57,25 +56,19 @@ export async function createP2PTopic(topicModel, localPersonId, remotePersonId) 
 /**
  * Grant access to a P2P channel for the two participants
  *
- * @param channelId - The P2P channel ID (format: id1<->id2)
+ * @param channelInfoIdHash - The channel info ID hash from createChannel result
  * @param person1 - First participant's person ID
  * @param person2 - Second participant's person ID
  * @returns Promise<void>
  */
-async function grantP2PChannelAccess(channelId, person1, person2) {
-    console.log('[P2PTopicService] Granting access for P2P channel:', channelId);
+async function grantP2PChannelAccess(channelInfoIdHash, person1, person2) {
+    console.log('[P2PTopicService] Granting access for P2P channel:', channelInfoIdHash?.substring(0, 8));
     console.log('[P2PTopicService]   Person 1:', person1?.substring(0, 8));
     console.log('[P2PTopicService]   Person 2:', person2?.substring(0, 8));
     try {
-        // Calculate channel info hash for P2P channel (null owner)
-        const channelIdHash = await calculateIdHashOfObj({
-            $type$: 'ChannelInfo',
-            id: channelId,
-            owner: undefined // null owner becomes undefined in the hash calculation
-        });
         // Grant access to both participants individually (not via groups)
         await createAccess([{
-                id: channelIdHash,
+                id: channelInfoIdHash,
                 person: [person1, person2], // Only these two people
                 group: [], // NO group access!
                 mode: SET_ACCESS_MODE.ADD
@@ -108,8 +101,6 @@ export async function autoCreateP2PTopicAfterPairing(params) {
     console.log('[P2PTopicService]   Initiated locally:', initiatedLocally);
     console.log('[P2PTopicService]   Local:', localPersonId?.substring(0, 8));
     console.log('[P2PTopicService]   Remote:', remotePersonId?.substring(0, 8));
-    // Wait a moment for trust establishment and data persistence
-    await new Promise(resolve => setTimeout(resolve, 3000));
     try {
         // Create the P2P topic
         const { topicRoom, wasCreated } = await createP2PTopic(topicModel, localPersonId, remotePersonId);
@@ -119,10 +110,14 @@ export async function autoCreateP2PTopicAfterPairing(params) {
             : `${remotePersonId}<->${localPersonId}`;
         // Only setup channel/access if topic was newly created
         if (wasCreated) {
-            // Ensure the channel exists in ChannelManager
-            await channelManager.createChannel(channelId, null); // null owner for P2P shared channel
+            // Sort participants for consistent ordering
+            const participants = localPersonId < remotePersonId
+                ? [localPersonId, remotePersonId]
+                : [remotePersonId, localPersonId];
+            // Ensure the channel exists in ChannelManager with participants array
+            const channelResult = await channelManager.createChannel(participants, null); // null owner for P2P shared channel
             // Grant access rights to both participants (person-based, not group-based)
-            await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
+            await grantP2PChannelAccess(channelResult.channelInfoIdHash, localPersonId, remotePersonId);
             console.log('[P2PTopicService] ✅ P2P topic and channel ready for messaging');
             // If we initiated the pairing, send a welcome message
             if (sendWelcomeMessage) {
@@ -144,9 +139,7 @@ export async function autoCreateP2PTopicAfterPairing(params) {
     }
     catch (error) {
         console.error('[P2PTopicService] Failed to auto-create P2P topic:', error);
-        // If we fail, it might be because the other peer is also trying to create it
-        // Wait and try to enter the room instead
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // If we fail, try to enter the room (other peer may have created it)
         try {
             const channelId = localPersonId < remotePersonId
                 ? `${localPersonId}<->${remotePersonId}`
@@ -208,10 +201,14 @@ export async function ensureP2PTopicForIncomingMessage(params) {
             const { topicRoom, wasCreated } = await createP2PTopic(topicModel, localPersonId, remotePersonId);
             // Only setup channel/access if topic was newly created
             if (wasCreated) {
-                // Ensure channel exists
-                await channelManager.createChannel(channelId, null);
+                // Sort participants for consistent ordering
+                const participants = localPersonId < remotePersonId
+                    ? [localPersonId, remotePersonId]
+                    : [remotePersonId, localPersonId];
+                // Ensure channel exists with participants array
+                const channelResult = await channelManager.createChannel(participants, null);
                 // Grant access rights to both participants
-                await grantP2PChannelAccess(channelId, localPersonId, remotePersonId);
+                await grantP2PChannelAccess(channelResult.channelInfoIdHash, localPersonId, remotePersonId);
                 console.log('[P2PTopicService] ✅ Created P2P topic for incoming message');
             }
             return topicRoom;

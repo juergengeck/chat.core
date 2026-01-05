@@ -6,6 +6,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Platform-agnostic chat/messaging business logic for LAMA applications.
 
+## CRITICAL: ONE/CHUM Architecture Principle
+
+**We drive things from the ground up and respond to the environment.**
+
+When the app layer needs to drive things, we **change the data landscape and let the system respond**. This allows us to use complexity instead of trying to harness it.
+
+### What this means in practice:
+
+**DON'T manually orchestrate:**
+```typescript
+// WRONG - trying to control the world
+await shareCertificatesToPeer(peer1);
+await shareCertificatesToPeer(peer2);
+await trackPendingShares(peer3); // not connected yet
+await shareWhenConnected(peer3); // manual mesh completion
+```
+
+**DO change data and let CHUM respond:**
+```typescript
+// RIGHT - change data, system responds
+// Topic references everything needed via child objects:
+//   Topic → channel (ChannelInfo) → participants (HashGroup)
+//        → channelCertificate (AffirmationCertificate)
+const topic = await createTopic(participants);
+await grantAccess(topic, participants);
+// CHUM automatically syncs Topic + all children to connected peers
+// When peer3 connects later, CHUM syncs automatically - no tracking needed
+```
+
+### Key insight:
+
+Objects with child references form complete graphs. CHUM fetches parent + all children atomically. No manual "pending share" tracking, no mesh completion logic, no orchestration.
+
+**Share the root object → CHUM syncs the tree → receivers respond to complete data arriving.**
+
 ## IMPORTANT: Naming Convention
 
 **"handler" → "plan" terminology**
@@ -206,23 +241,32 @@ Helper for creating Profile and Someone objects for remote contacts:
 
 ### TopicGroupManager
 
-Topic management with Group signature validation:
+Topic management using the ONE/CHUM architecture principle (see above).
+
+**Architecture**:
+```
+Topic (parent object - share this, CHUM syncs the tree)
+  → channel (ChannelInfo)
+      → participants (HashGroup)
+  → channelCertificate (AffirmationCertificate)
+```
 
 **Features**:
-- Validates Group objects using AffirmationCertificate (not raw Signatures)
-- Ensures only trusted, properly signed Groups are accepted
-- Prevents unauthorized group injection attacks
-- Integrates with one.trust certificate validation
+- Creates topics with proper object graph (Topic → ChannelInfo → HashGroup)
+- Attaches channelCertificate for trust validation
+- Shares Topic to participants - CHUM syncs everything automatically
+- Validates received topics via channelCertificate
+- No manual sharing orchestration, no pending share tracking
+
+**Key methods**:
+- `createGroupTopic(name, topicId, participants)` - Creates topic with certificate, shares to participants
+- `getTopicParticipants(topicId)` - Gets participants from ChannelInfo's HashGroup
+- `addParticipantsToTopic(topicId, newParticipants)` - Updates Topic/ChannelInfo/HashGroup
+- `handleReceivedTopic(topicIdHash, topic)` - Validates and processes received topics
 
 ### GroupPlan
 
-Thin wrapper around TopicGroupManager for group operations:
-
-**Features**:
-- Creates conversation groups for topics
-- Gets group for a topic
-- Gets participants for a topic
-- Delegates all work to TopicGroupManager
+Transport-agnostic wrapper around TopicGroupManager:
 
 **Usage Pattern**:
 ```typescript
@@ -230,18 +274,16 @@ import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
 
 const groupPlan = new GroupPlan(topicGroupManager, oneCore);
 
-// Create group
-const result = await groupPlan.createGroup({
+// Create topic (shares to participants via CHUM)
+const result = await groupPlan.createTopic({
   topicId: 'topic-123',
   topicName: 'My Conversation',
   participants: [personIdHash1, personIdHash2]
 });
 
-// Get group for topic
-const groupResult = await groupPlan.getGroupForTopic({ topicId: 'topic-123' });
+// Get participants
+const participants = await groupPlan.getTopicParticipants({ topicId: 'topic-123' });
 ```
-
-**Note**: GroupPlan does NOT create Story/Assembly objects inline. If audit tracking is needed, use `@refinio/api` StoryFactory with `assembly.core` AssemblyListener at the platform level. See refinio.api and assembly.core CLAUDE.md for details.
 
 ## Type Safety
 
