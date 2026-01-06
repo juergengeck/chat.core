@@ -34,6 +34,8 @@ export interface GroupPlanStorageDeps {
   getObjectByIdHash: <T>(idHash: SHA256IdHash<T>) => Promise<{ obj: T }>;
   getObject: <T>(hash: SHA256Hash<T>) => Promise<T>;
   calculateIdHashOfObj: <T>(obj: T) => Promise<SHA256IdHash<T>>;
+  storeUnversionedObject: <T>(obj: T) => Promise<{ hash: SHA256Hash<T> }>;
+  storeVersionedObject: <T>(obj: T) => Promise<{ hash: SHA256Hash<T>; idHash: SHA256IdHash<T> }>;
 }
 
 export interface CreateTopicRequest {
@@ -112,8 +114,8 @@ export class GroupPlan {
   /**
    * Create a conversation topic with participants
    *
-   * NOTE: For group conversations with proper Group/HashGroup structure,
-   * use ChatPlan.createGroupConversation() instead.
+   * Creates HashGroup -> Group -> Topic with proper structure.
+   * TopicModel.createGroupTopic expects a Group ID hash.
    */
   async createTopic(request: CreateTopicRequest): Promise<CreateTopicResponse> {
     console.log(`[GroupPlan] Creating topic ${request.topicId} with ${request.participants.length} participants`);
@@ -125,10 +127,31 @@ export class GroupPlan {
         allParticipants.unshift(this.ownerId);
       }
 
-      // Create topic via TopicModel (creates ChannelInfo + HashGroup internally)
+      // Step 1: Create HashGroup with participants
+      const hashGroupObj: HashGroup<Person> = {
+        $type$: 'HashGroup',
+        person: new Set(allParticipants)
+      };
+      const hashGroupResult = await this.storageDeps.storeUnversionedObject(hashGroupObj);
+      const hashGroupHash = hashGroupResult.hash as SHA256Hash<HashGroup<Person>>;
+
+      console.log(`[GroupPlan] Created HashGroup: ${String(hashGroupHash).substring(0, 8)}`);
+
+      // Step 2: Create Group referencing HashGroup
+      const groupObj: Group = {
+        $type$: 'Group',
+        name: request.topicName || `group-${request.topicId}`,
+        hashGroup: hashGroupHash
+      };
+      const groupResult = await this.storageDeps.storeVersionedObject(groupObj);
+      const groupIdHash = groupResult.idHash as SHA256IdHash<Group>;
+
+      console.log(`[GroupPlan] Created Group: ${String(groupIdHash).substring(0, 8)}`);
+
+      // Step 3: Create topic via TopicModel with Group ID hash
       const topic = await this.topicModel.createGroupTopic(
         request.topicName,
-        allParticipants,
+        groupIdHash,
         request.topicId,
         this.ownerId
       );

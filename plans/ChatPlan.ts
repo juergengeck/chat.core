@@ -10,7 +10,8 @@
  */
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Person, Group, HashGroup, SetAccessParam } from '@refinio/one.core/lib/recipes.js';
+import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import type { SetAccessParam } from '@refinio/one.core/lib/access.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 import { GroupPlan as GroupPlanImpl, GroupPlanStorageDeps } from './GroupPlan.js';
@@ -274,8 +275,16 @@ export class ChatPlan {
           return getObject(hash);
         }),
         calculateIdHashOfObj: nodeOneCore.calculateIdHashOfObj || (async (obj: any) => {
-          const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/object.js');
+          const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
           return calculateIdHashOfObj(obj);
+        }),
+        storeUnversionedObject: nodeOneCore.storeUnversionedObject || (async (obj: any) => {
+          const { storeUnversionedObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+          return storeUnversionedObject(obj);
+        }),
+        storeVersionedObject: nodeOneCore.storeVersionedObject || (async (obj: any) => {
+          const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+          return storeVersionedObject(obj);
         })
       };
       this.groupPlan = new GroupPlanImpl(nodeOneCore.topicModel, storageDeps, nodeOneCore.ownerId);
@@ -1311,7 +1320,7 @@ export class ChatPlan {
 
     // Import storage functions
     const { storeUnversionedObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
-    const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/object.js');
+    const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/util/object.js');
     const { createAccess } = await import('@refinio/one.core/lib/access.js');
 
     // Step 1: Create HashGroup with participants
@@ -1351,11 +1360,13 @@ export class ChatPlan {
     const accessRequests: SetAccessParam[] = [
       {
         id: topicIdHash,
+        person: [],
         hashGroup: [hashGroupHash],
         mode: SET_ACCESS_MODE.ADD
       },
       {
         id: topic.channel,
+        person: [],
         hashGroup: [hashGroupHash],
         mode: SET_ACCESS_MODE.ADD
       }

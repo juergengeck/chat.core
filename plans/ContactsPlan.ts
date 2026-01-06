@@ -788,7 +788,7 @@ export class ContactsPlan {
       await createAccess([{
         id: result.idHash,
         person: [],
-        group: [hashGroup.hash],  // Access tied to HashGroup membership
+        hashGroup: [hashGroup.hash],  // Access tied to HashGroup membership
         mode: SET_ACCESS_MODE.ADD
       }]);
 
@@ -844,7 +844,7 @@ export class ContactsPlan {
       await createAccess([{
         id: groupIdHash,
         person: [],
-        group: [newHashGroup.hash],  // Access tied to updated HashGroup membership
+        hashGroup: [newHashGroup.hash],  // Access tied to updated HashGroup membership
         mode: SET_ACCESS_MODE.ADD
       }]);
 

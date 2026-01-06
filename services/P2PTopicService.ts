@@ -79,7 +79,7 @@ async function grantP2PChannelAccess(channelInfoIdHash: any, person1: any, perso
     await createAccess([{
       id: channelInfoIdHash,
       person: [person1, person2], // Only these two people
-      group: [], // NO group access!
+      hashGroup: [], // NO group access!
       mode: SET_ACCESS_MODE.ADD
     }]);
 
