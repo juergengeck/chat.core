@@ -5,13 +5,15 @@
  * Can be used from both Electron IPC and Web Worker contexts.
  * Pattern based on refinio.api architecture.
  *
- * SELF-SUFFICIENT: Creates GroupPlan internally using nodeOneCore.topicGroupManager.
+ * SELF-SUFFICIENT: Creates GroupPlan internally using nodeOneCore.topicModel.
  * Platform code just needs to pass fundamental dependencies.
  */
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
-import { GroupPlan as GroupPlanImpl } from './GroupPlan.js';
+import type { Person, Group, HashGroup, SetAccessParam } from '@refinio/one.core/lib/recipes.js';
+import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
+import { GroupPlan as GroupPlanImpl, GroupPlanStorageDeps } from './GroupPlan.js';
 import { createP2PTopic } from '../services/P2PTopicService.js';
 
 // StoryFactory interface for optional Story/Assembly tracking
@@ -213,11 +215,11 @@ export interface VerifyMessageAssertionResponse {
 /**
  * ChatPlan - Pure business logic for chat operations
  *
- * SELF-SUFFICIENT: Automatically creates GroupPlan using nodeOneCore.topicGroupManager.
- * GroupPlan internally creates StoryFactory and AssemblyPlan for Story/Assembly tracking.
+ * SELF-SUFFICIENT: Automatically creates GroupPlan using nodeOneCore.topicModel.
+ * For group conversations with proper Group/HashGroup structure, use createGroupConversation().
  *
  * Dependencies injected via constructor:
- * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, topicGroupManager, storage functions
+ * - nodeOneCore: The ONE.core instance with topicModel, leuteModel, storage functions
  * - stateManager: State management service (optional)
  * - messageVersionManager: Message versioning manager (optional)
  * - messageAssertionManager: Message assertion/certificate manager (optional)
@@ -228,7 +230,6 @@ export interface VerifyMessageAssertionResponse {
  * ```typescript
  * const chatPlan = new ChatPlan(nodeOneCore);
  * ```
- * All internal wiring (GroupPlan → StoryFactory → AssemblyPlan) happens automatically.
  */
 export class ChatPlan {
   static get planId(): string { return 'chat'; }
@@ -257,14 +258,28 @@ export class ChatPlan {
     this.messageAssertionManager = messageAssertionManager;
     this.storyFactory = storyFactory;
 
-    // Create GroupPlan if not provided (using topicGroupManager from nodeOneCore)
+    // Create GroupPlan if not provided (using topicModel from nodeOneCore)
     if (groupPlan) {
       // Use provided GroupPlan (backward compatibility or power user override)
       this.groupPlan = groupPlan;
-    } else if (nodeOneCore.topicGroupManager) {
-      // Auto-create GroupPlan
-      this.groupPlan = new GroupPlanImpl(nodeOneCore.topicGroupManager);
-      console.log('[ChatPlan] ✅ Auto-created GroupPlan');
+    } else if (nodeOneCore.topicModel && nodeOneCore.ownerId) {
+      // Auto-create GroupPlan with TopicModel
+      const storageDeps: GroupPlanStorageDeps = {
+        getObjectByIdHash: nodeOneCore.getObjectByIdHash || (async (idHash: any) => {
+          const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+          return getObjectByIdHash(idHash);
+        }),
+        getObject: nodeOneCore.getObject || (async (hash: any) => {
+          const { getObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+          return getObject(hash);
+        }),
+        calculateIdHashOfObj: nodeOneCore.calculateIdHashOfObj || (async (obj: any) => {
+          const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/object.js');
+          return calculateIdHashOfObj(obj);
+        })
+      };
+      this.groupPlan = new GroupPlanImpl(nodeOneCore.topicModel, storageDeps, nodeOneCore.ownerId);
+      console.log('[ChatPlan] Auto-created GroupPlan with TopicModel');
     }
   }
 
@@ -656,8 +671,8 @@ export class ChatPlan {
         throw new Error('Models not initialized');
       }
 
-      if (!this.nodeOneCore.topicGroupManager) {
-        throw new Error('TopicGroupManager not initialized');
+      if (!this.groupPlan) {
+        throw new Error('GroupPlan not initialized');
       }
 
       if (!userId) {
@@ -681,28 +696,18 @@ export class ChatPlan {
       const topicId = `topic-${hashHex.substring(0, 24)}`;
       console.log(`[ChatPlan] Unique topic ID: ${topicId} (from: ${userId.substring(0, 8)}:${name}:${timestamp})`);
 
-      // Create topic using GroupPlan (delegates to TopicGroupManager)
-      if (this.groupPlan) {
-        const result = await this.groupPlan.createTopic({
-          topicId,
-          topicName: name,
-          participants
-        });
+      // Create topic using GroupPlan (uses TopicModel internally)
+      const result = await this.groupPlan.createTopic({
+        topicId,
+        topicName: name,
+        participants
+      });
 
-        if (!result.success) {
-          throw new Error(result.error || 'Topic creation failed');
-        }
-
-        console.log(`[ChatPlan] ✅ Created topic via GroupPlan - topicIdHash: ${result.topicIdHash?.substring(0, 8)}`);
-      } else {
-        // Fallback: Direct TopicGroupManager call
-        await this.nodeOneCore.topicGroupManager.createGroupTopic(
-          name,
-          topicId,
-          participants
-        );
-        console.log(`[ChatPlan] ✅ Created topic via TopicGroupManager`);
+      if (!result.success) {
+        throw new Error(result.error || 'Topic creation failed');
       }
+
+      console.log(`[ChatPlan] Created topic via GroupPlan - topicIdHash: ${result.topicIdHash?.substring(0, 8)}`)
 
       console.log(`[ChatPlan] Topic created with ${participants.length} participants`);
 
@@ -851,13 +856,15 @@ export class ChatPlan {
           let participants: any[] = [];
           let aiModelId: string | undefined;
           try {
-            // Get participants directly from TopicGroupManager (uses ChannelInfo → HashGroup)
+            // Get participants directly from GroupPlan (uses ChannelInfo → HashGroup)
             let participantIds: string[] = [];
 
-            if (this.nodeOneCore.topicGroupManager) {
+            if (this.groupPlan) {
               try {
-                const ids = await this.nodeOneCore.topicGroupManager.getTopicParticipants(topicId);
-                participantIds = ids.map((id: any) => String(id));
+                const result = await this.groupPlan.getTopicParticipants({ topicId });
+                if (result.success && result.participants) {
+                  participantIds = result.participants.map((id: any) => String(id));
+                }
                 console.log(`[ChatPlan] Topic ${topicId} (${name}) - ${participantIds.length} participants`);
               } catch (e) {
                 console.log(`[ChatPlan] Topic ${topicId} (${name}) - no participants found`);
@@ -1270,6 +1277,105 @@ export class ChatPlan {
   }
 
   /**
+   * Create a group conversation with proper Group/HashGroup structure.
+   *
+   * This method implements the new group chat architecture:
+   * 1. Creates HashGroup with participants
+   * 2. Uses GroupChatPlan to create Group referencing HashGroup
+   * 3. Uses TopicModel to create Topic referencing Group
+   * 4. Grants access via HashGroup (CHUM handles automatic distribution)
+   *
+   * @param name - Name of the group conversation
+   * @param participants - Person IDs of all participants (owner is auto-included)
+   * @returns The created Topic
+   */
+  async createGroupConversation(
+    name: string,
+    participants: SHA256IdHash<Person>[]
+  ): Promise<Topic> {
+    if (!this.nodeOneCore.initialized || !this.nodeOneCore.topicModel) {
+      throw new Error('TopicModel not initialized');
+    }
+
+    if (!this.nodeOneCore.ownerId) {
+      throw new Error('Owner ID not set');
+    }
+
+    console.log(`[ChatPlan] Creating group conversation "${name}" with ${participants.length} participants`);
+
+    // Ensure owner is included in participants
+    const allParticipants = [...participants];
+    if (!allParticipants.includes(this.nodeOneCore.ownerId)) {
+      allParticipants.unshift(this.nodeOneCore.ownerId);
+    }
+
+    // Import storage functions
+    const { storeUnversionedObject } = await import('@refinio/one.core/lib/storage-unversioned-objects.js');
+    const { calculateIdHashOfObj } = await import('@refinio/one.core/lib/object.js');
+    const { createAccess } = await import('@refinio/one.core/lib/access.js');
+
+    // Step 1: Create HashGroup with participants
+    const hashGroup: HashGroup<Person> = {
+      $type$: 'HashGroup',
+      person: new Set(allParticipants)
+    };
+    const hashGroupResult = await storeUnversionedObject(hashGroup);
+    const hashGroupHash = hashGroupResult.hash as SHA256Hash<HashGroup<Person>>;
+
+    console.log(`[ChatPlan] Created HashGroup: ${hashGroupHash.substring(0, 8)}`);
+
+    // Step 2: Create Group referencing HashGroup via GroupChatPlan (if available)
+    // Otherwise create via TopicModel directly
+    let groupIdHash: SHA256IdHash<Group> | undefined;
+
+    if (this.nodeOneCore.groupChatPlan) {
+      // Use GroupChatPlan from connection.core
+      const groupResult = await this.nodeOneCore.groupChatPlan.createGroup(name, hashGroupHash);
+      groupIdHash = groupResult.groupIdHash as SHA256IdHash<Group>;
+      console.log(`[ChatPlan] Created Group via GroupChatPlan: ${groupIdHash.substring(0, 8)}`);
+    }
+
+    // Step 3: Create Topic referencing Group (if created)
+    // TopicModel.createGroupTopic now accepts Group reference
+    const topic = await this.nodeOneCore.topicModel.createGroupTopic(
+      name,
+      groupIdHash || allParticipants, // Pass Group reference or participants
+      undefined, // topicId (auto-generated)
+      this.nodeOneCore.ownerId
+    );
+    const topicIdHash = await calculateIdHashOfObj(topic);
+
+    console.log(`[ChatPlan] Created Topic: ${topicIdHash.substring(0, 8)}`);
+
+    // Step 4: Grant access via HashGroup
+    const accessRequests: SetAccessParam[] = [
+      {
+        id: topicIdHash,
+        hashGroup: [hashGroupHash],
+        mode: SET_ACCESS_MODE.ADD
+      },
+      {
+        id: topic.channel,
+        hashGroup: [hashGroupHash],
+        mode: SET_ACCESS_MODE.ADD
+      }
+    ];
+
+    await createAccess(accessRequests);
+    console.log(`[ChatPlan] Granted access via HashGroup`);
+
+    // Configure channel for group conversations
+    if (this.nodeOneCore.channelManager) {
+      this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topic.id, true);
+      this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topic.id, true);
+    }
+
+    console.log(`[ChatPlan] Group conversation created: ${topic.id}`);
+
+    return topic;
+  }
+
+  /**
    * Get current user
    */
   async getCurrentUser(_request: GetCurrentUserRequest): Promise<GetCurrentUserResponse> {
@@ -1365,14 +1471,14 @@ export class ChatPlan {
 
       console.log('[ChatPlan] ✅ Added participants to topic, new channel:', updatedTopic.channel?.substring(0, 8));
 
-      // Update TopicGroupManager to add participants (updates Topic → ChannelInfo → HashGroup)
-      if (this.nodeOneCore.topicGroupManager) {
-        console.log('[ChatPlan] Updating TopicGroupManager with new participants');
-        await this.nodeOneCore.topicGroupManager.addParticipantsToTopic(
-          request.conversationId,
-          request.participantIds as any[]
-        );
-        console.log('[ChatPlan] ✅ TopicGroupManager updated');
+      // Update GroupPlan to add participants (updates Topic → ChannelInfo → HashGroup)
+      if (this.groupPlan) {
+        console.log('[ChatPlan] Updating GroupPlan with new participants');
+        await this.groupPlan.addParticipants({
+          topicId: request.conversationId,
+          participants: request.participantIds as any[]
+        });
+        console.log('[ChatPlan] GroupPlan updated');
       }
 
       // Detect if any new participant is AI and register the topic

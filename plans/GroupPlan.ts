@@ -2,20 +2,39 @@
  * Group Plan (Pure Business Logic)
  *
  * Transport-agnostic plan for conversation topic operations.
- * Delegates to TopicGroupManager which uses Topic as the parent object.
+ * Uses TopicModel for topic creation and access control.
  *
  * Architecture:
  *   Topic → channel (ChannelInfo) → participants (HashGroup)
- *        → channelCertificate (AffirmationCertificate)
+ *        → group (Group, for group conversations)
  *
  * CHUM follows all references automatically when Topic is shared.
  */
 
 import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-checks.js';
-import type { Person, HashGroup } from '@refinio/one.core/lib/recipes.js';
+import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
-import type { TopicGroupManager, CreateTopicResult } from '../models/TopicGroupManager.js';
+import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
+
+/**
+ * Result from creating a topic
+ */
+export interface CreateTopicResult {
+  topic: Topic;
+  topicIdHash: SHA256IdHash<Topic>;
+  channelInfoIdHash: SHA256IdHash<ChannelInfo>;
+  participantsHash: SHA256Hash<HashGroup<Person>>;
+}
+
+/**
+ * Storage dependencies for GroupPlan
+ */
+export interface GroupPlanStorageDeps {
+  getObjectByIdHash: <T>(idHash: SHA256IdHash<T>) => Promise<{ obj: T }>;
+  getObject: <T>(hash: SHA256Hash<T>) => Promise<T>;
+  calculateIdHashOfObj: <T>(obj: T) => Promise<SHA256IdHash<T>>;
+}
 
 export interface CreateTopicRequest {
   topicId: string;
@@ -67,40 +86,69 @@ export interface AddParticipantsResponse {
  * GroupPlan - Pure business logic for conversation topic operations
  *
  * Dependencies injected via constructor:
- * - topicGroupManager: Topic/ChannelInfo operations
+ * - topicModel: TopicModel for topic creation and queries
+ * - storageDeps: Storage functions for object access
  */
 export class GroupPlan {
   static get planId(): string { return 'group'; }
   static get planName(): string { return 'Group'; }
-  static get description(): string { return 'Manages conversation topics via Topic/ChannelInfo sharing'; }
-  static get version(): string { return '3.0.0'; }
+  static get description(): string { return 'Manages conversation topics via TopicModel'; }
+  static get version(): string { return '4.0.0'; }
 
-  private topicGroupManager: TopicGroupManager;
+  private topicModel: TopicModel;
+  private storageDeps: GroupPlanStorageDeps;
+  private ownerId: SHA256IdHash<Person>;
 
-  constructor(topicGroupManager: TopicGroupManager) {
-    this.topicGroupManager = topicGroupManager;
+  // Cache: topicId -> topicIdHash (for quick lookups)
+  private topicCache: Map<string, SHA256IdHash<Topic>>;
+
+  constructor(topicModel: TopicModel, storageDeps: GroupPlanStorageDeps, ownerId: SHA256IdHash<Person>) {
+    this.topicModel = topicModel;
+    this.storageDeps = storageDeps;
+    this.ownerId = ownerId;
+    this.topicCache = new Map();
   }
 
   /**
    * Create a conversation topic with participants
+   *
+   * NOTE: For group conversations with proper Group/HashGroup structure,
+   * use ChatPlan.createGroupConversation() instead.
    */
   async createTopic(request: CreateTopicRequest): Promise<CreateTopicResponse> {
     console.log(`[GroupPlan] Creating topic ${request.topicId} with ${request.participants.length} participants`);
 
     try {
-      const result: CreateTopicResult = await this.topicGroupManager.createGroupTopic(
+      // Ensure owner is included in participants
+      const allParticipants = [...request.participants];
+      if (!allParticipants.includes(this.ownerId)) {
+        allParticipants.unshift(this.ownerId);
+      }
+
+      // Create topic via TopicModel (creates ChannelInfo + HashGroup internally)
+      const topic = await this.topicModel.createGroupTopic(
         request.topicName,
+        allParticipants,
         request.topicId,
-        request.participants
+        this.ownerId
       );
 
-      console.log(`[GroupPlan] ✅ Created topic ${String(result.topicIdHash).substring(0, 8)}`);
+      const topicIdHash = await this.storageDeps.calculateIdHashOfObj(topic);
+
+      // Get ChannelInfo to extract participantsHash
+      const channelInfoResult = await this.storageDeps.getObjectByIdHash(topic.channel);
+      const channelInfo: ChannelInfo = channelInfoResult.obj;
+
+      // Cache the topic
+      this.topicCache.set(request.topicId, topicIdHash);
+
+      console.log(`[GroupPlan] Created topic ${String(topicIdHash).substring(0, 8)}`);
 
       return {
         success: true,
-        topicIdHash: result.topicIdHash,
-        channelInfoIdHash: result.channelInfoIdHash,
-        participantsHash: result.participantsHash
+        topicIdHash,
+        channelInfoIdHash: topic.channel,
+        participantsHash: channelInfo.participants
       };
     } catch (error) {
       console.error('[GroupPlan] Error creating topic:', error);
@@ -116,16 +164,23 @@ export class GroupPlan {
    */
   async getTopic(request: GetTopicRequest): Promise<GetTopicResponse> {
     try {
-      const topicIdHash = this.topicGroupManager.getCachedTopicForConversation(request.topicId);
+      // Try cache first
+      let topicIdHash = this.topicCache.get(request.topicId);
 
+      // If not in cache, try to find via TopicModel
       if (!topicIdHash) {
-        return {
-          success: false,
-          error: `No topic found for topicId ${request.topicId}`
-        };
+        const topic = await this.topicModel.findTopic(request.topicId);
+        if (!topic) {
+          return {
+            success: false,
+            error: `No topic found for topicId ${request.topicId}`
+          };
+        }
+        topicIdHash = await this.storageDeps.calculateIdHashOfObj(topic);
+        this.topicCache.set(request.topicId, topicIdHash);
       }
 
-      const participants = await this.topicGroupManager.getTopicParticipants(request.topicId);
+      const participants = await this.getParticipantsForTopic(request.topicId);
 
       return {
         success: true,
@@ -142,11 +197,31 @@ export class GroupPlan {
   }
 
   /**
+   * Get participants for a topic from its ChannelInfo
+   */
+  private async getParticipantsForTopic(topicId: string): Promise<SHA256IdHash<Person>[]> {
+    const topic = await this.topicModel.findTopic(topicId);
+    if (!topic) {
+      throw new Error(`Topic ${topicId} not found`);
+    }
+
+    // Get ChannelInfo
+    const channelInfoResult = await this.storageDeps.getObjectByIdHash(topic.channel);
+    const channelInfo: ChannelInfo = channelInfoResult.obj;
+
+    // Get HashGroup
+    const hashGroup = await this.storageDeps.getObject(channelInfo.participants);
+    const personSet: Set<SHA256IdHash<Person>> = (hashGroup as HashGroup<Person>).person || new Set();
+
+    return Array.from(personSet);
+  }
+
+  /**
    * Get participants for a topic
    */
   async getTopicParticipants(request: GetTopicParticipantsRequest): Promise<GetTopicParticipantsResponse> {
     try {
-      const participants = await this.topicGroupManager.getTopicParticipants(request.topicId);
+      const participants = await this.getParticipantsForTopic(request.topicId);
 
       return {
         success: true,
@@ -168,7 +243,13 @@ export class GroupPlan {
     console.log(`[GroupPlan] Adding ${request.participants.length} participants to topic ${request.topicId}`);
 
     try {
-      await this.topicGroupManager.addParticipantsToTopic(request.topicId, request.participants);
+      const topic = await this.topicModel.findTopic(request.topicId);
+      if (!topic) {
+        throw new Error(`Topic ${request.topicId} not found`);
+      }
+
+      // Use TopicModel to add participants
+      await this.topicModel.addPersonsToTopic(request.participants, topic);
 
       return { success: true };
     } catch (error) {
@@ -178,5 +259,12 @@ export class GroupPlan {
         error: (error as Error).message
       };
     }
+  }
+
+  /**
+   * Get cached topic ID hash
+   */
+  getCachedTopicForConversation(topicId: string): SHA256IdHash<Topic> | undefined {
+    return this.topicCache.get(topicId);
   }
 }

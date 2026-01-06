@@ -236,8 +236,8 @@ export async function setupBrowserNodeChannelAccess(nodeOwnerId: SHA256IdHash<Pe
       console.log('[ChannelAccess] ✅ App data channel access configured')
     }
     
-    // Note: Topic-specific channels are created by TopicGroupManager for each participant
-    console.log('[ChannelAccess] Browser channels will be created per topic by TopicGroupManager')
+    // Note: Topic-specific channels are created by ChatPlan/GroupPlan for each participant
+    console.log('[ChannelAccess] Browser channels will be created per topic by ChatPlan')
       
       // Set up a listener for channel updates to trace CHUM sync
       // New callback signature: (channelInfoIdHash, participantsHash, owner, time, data)

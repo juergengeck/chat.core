@@ -97,7 +97,7 @@ RUNTIME:
 chat.core/
 ├── plans/                 # Pure business logic plans (RPC-style interfaces)
 │   ├── ChatPlan.ts            # Message/conversation operations
-│   ├── GroupPlan.ts           # Group/topic management (delegates to TopicGroupManager)
+│   ├── GroupPlan.ts           # Group/topic management (uses TopicModel)
 │   ├── ContactsPlan.ts        # Contact management
 │   ├── ExportPlan.ts          # Export/import operations
 │   └── FeedForwardPlan.ts     # Feed forward operations
@@ -106,8 +106,7 @@ chat.core/
 │   ├── ProfileService.ts      # Profile/avatar management
 │   ├── P2PTopicService.ts     # P2P topic/channel creation
 │   └── ContactCreation.ts     # Helper for creating Profile/Someone objects
-├── models/                # Domain models
-│   └── TopicGroupManager.ts   # Group validation & topic management
+├── models/                # Domain models (currently empty)
 ├── recipes/               # ONE recipe definitions
 │   ├── LLMRecipe.ts           # LLM-related recipes
 │   └── index.ts               # Recipe exports
@@ -168,7 +167,7 @@ Chat-specific business logic that:
 **Contents**:
 - Chat/messaging operations (ChatPlan)
 - Contact management with AI detection (ContactService, ContactsPlan)
-- Topic/conversation management with Group signature validation (TopicGroupManager)
+- Topic/conversation management (GroupPlan, ChatPlan.createGroupConversation)
 - Profile and avatar management (ProfileService)
 - P2P topic creation (P2PTopicService)
 - Contact creation helpers (ContactCreation)
@@ -239,42 +238,26 @@ Helper for creating Profile and Someone objects for remote contacts:
 - Prevents infinite loops with retry delay tracking
 - Platform-agnostic (works in browser and Node.js)
 
-### TopicGroupManager
+### GroupPlan
 
-Topic management using the ONE/CHUM architecture principle (see above).
+Topic management using TopicModel directly. For group conversations with proper
+Group/HashGroup structure, use `ChatPlan.createGroupConversation()` instead.
 
 **Architecture**:
 ```
 Topic (parent object - share this, CHUM syncs the tree)
   → channel (ChannelInfo)
       → participants (HashGroup)
-  → channelCertificate (AffirmationCertificate)
+  → group (Group, optional - for group conversations)
 ```
-
-**Features**:
-- Creates topics with proper object graph (Topic → ChannelInfo → HashGroup)
-- Attaches channelCertificate for trust validation
-- Shares Topic to participants - CHUM syncs everything automatically
-- Validates received topics via channelCertificate
-- No manual sharing orchestration, no pending share tracking
-
-**Key methods**:
-- `createGroupTopic(name, topicId, participants)` - Creates topic with certificate, shares to participants
-- `getTopicParticipants(topicId)` - Gets participants from ChannelInfo's HashGroup
-- `addParticipantsToTopic(topicId, newParticipants)` - Updates Topic/ChannelInfo/HashGroup
-- `handleReceivedTopic(topicIdHash, topic)` - Validates and processes received topics
-
-### GroupPlan
-
-Transport-agnostic wrapper around TopicGroupManager:
 
 **Usage Pattern**:
 ```typescript
 import { GroupPlan } from '@chat/core/plans/GroupPlan.js';
 
-const groupPlan = new GroupPlan(topicGroupManager, oneCore);
+const groupPlan = new GroupPlan(topicModel, storageDeps, ownerId);
 
-// Create topic (shares to participants via CHUM)
+// Create topic (uses TopicModel internally)
 const result = await groupPlan.createTopic({
   topicId: 'topic-123',
   topicName: 'My Conversation',
@@ -283,6 +266,16 @@ const result = await groupPlan.createTopic({
 
 // Get participants
 const participants = await groupPlan.getTopicParticipants({ topicId: 'topic-123' });
+```
+
+### ChatPlan.createGroupConversation
+
+For group conversations with proper Group/HashGroup-based access control:
+
+```typescript
+// Creates HashGroup → Group → Topic with proper access grants
+const topic = await chatPlan.createGroupConversation('My Group', [person1, person2]);
+// CHUM automatically syncs to all participants via HashGroup access
 ```
 
 ## Type Safety
