@@ -1333,22 +1333,23 @@ export class ChatPlan {
 
     console.log(`[ChatPlan] Created HashGroup: ${hashGroupHash.substring(0, 8)}`);
 
-    // Step 2: Create Group referencing HashGroup via GroupChatPlan (if available)
-    // Otherwise create via TopicModel directly
-    let groupIdHash: SHA256IdHash<Group> | undefined;
+    // Step 2: Create Group referencing HashGroup
+    const { storeVersionedObject } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
 
-    if (this.nodeOneCore.groupChatPlan) {
-      // Use GroupChatPlan from connection.core
-      const groupResult = await this.nodeOneCore.groupChatPlan.createGroup(name, hashGroupHash);
-      groupIdHash = groupResult.groupIdHash as SHA256IdHash<Group>;
-      console.log(`[ChatPlan] Created Group via GroupChatPlan: ${groupIdHash.substring(0, 8)}`);
-    }
+    const group: Group = {
+      $type$: 'Group',
+      name,
+      hashGroup: hashGroupHash,
+      participants: hashGroupHash
+    };
+    const groupResult = await storeVersionedObject(group);
+    const groupIdHash = groupResult.idHash as SHA256IdHash<Group>;
+    console.log(`[ChatPlan] Created Group: ${groupIdHash.substring(0, 8)}`);
 
-    // Step 3: Create Topic referencing Group (if created)
-    // TopicModel.createGroupTopic now accepts Group reference
+    // Step 3: Create Topic referencing Group
     const topic = await this.nodeOneCore.topicModel.createGroupTopic(
       name,
-      groupIdHash || allParticipants, // Pass Group reference or participants
+      groupIdHash,
       undefined, // topicId (auto-generated)
       this.nodeOneCore.ownerId
     );
