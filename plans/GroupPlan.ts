@@ -29,13 +29,16 @@ export interface CreateTopicResult {
 
 /**
  * Storage dependencies for GroupPlan
+ * Note: Generic methods use 'any' to avoid constraint issues with ONE.core's
+ * complex type system. Runtime behavior is correct; these are just type signatures
+ * for the dependency injection pattern.
  */
 export interface GroupPlanStorageDeps {
-  getObjectByIdHash: <T>(idHash: SHA256IdHash<T>) => Promise<{ obj: T }>;
-  getObject: <T>(hash: SHA256Hash<T>) => Promise<T>;
-  calculateIdHashOfObj: <T>(obj: T) => Promise<SHA256IdHash<T>>;
-  storeUnversionedObject: <T>(obj: T) => Promise<{ hash: SHA256Hash<T> }>;
-  storeVersionedObject: <T>(obj: T) => Promise<{ hash: SHA256Hash<T>; idHash: SHA256IdHash<T> }>;
+  getObjectByIdHash: (idHash: SHA256IdHash<any>) => Promise<{ obj: any }>;
+  getObject: (hash: SHA256Hash<any>) => Promise<any>;
+  calculateIdHashOfObj: (obj: any) => Promise<SHA256IdHash<any>>;
+  storeUnversionedObject: (obj: any) => Promise<{ hash: SHA256Hash<any> }>;
+  storeVersionedObject: (obj: any) => Promise<{ hash: SHA256Hash<any>; idHash: SHA256IdHash<any> }>;
 }
 
 export interface CreateTopicRequest {
