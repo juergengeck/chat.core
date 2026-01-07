@@ -13,7 +13,10 @@ import type { SHA256IdHash, SHA256Hash } from '@refinio/one.core/lib/util/type-c
 import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js';
 import type { SetAccessParam } from '@refinio/one.core/lib/access.js';
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
+import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
+import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
+import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
 import { GroupPlan as GroupPlanImpl, GroupPlanStorageDeps } from './GroupPlan.js';
 import { createP2PTopic } from '../services/P2PTopicService.js';
 
@@ -414,13 +417,8 @@ export class ChatPlan {
         channel: topicChannel?.substring(0, 16)
       });
 
-      // Determine if P2P or group
-      const isP2P = request.conversationId.includes('<->');
-      // For group chats, use the sender as channel owner (each participant owns their channel)
-      const channelOwner = isP2P ? null : userId;
-      console.log('[ChatPlan.sendMessage] 🔑 isP2P:', isP2P, 'channelOwner:', channelOwner ? 'user' : 'null (shared)');
-
       // Send message with or without attachments
+      // Channel identity is based on participants only (no owner)
       if (request.attachments && request.attachments.length > 0) {
         // Transform attachments to the format expected by sendMessageWithAttachmentAsHash
         const attachmentObjects = request.attachments.map(att => {
@@ -446,12 +444,10 @@ export class ChatPlan {
 
         await topicRoom.sendMessageWithAttachmentAsHash(
           request.content || '',
-          attachmentObjects,
-          undefined,
-          channelOwner
+          attachmentObjects
         );
       } else {
-        await topicRoom.sendMessage(request.content, undefined, channelOwner);
+        await topicRoom.sendMessage(request.content);
       }
 
       // AI response is handled by AIMessageListener (not here)
@@ -865,74 +861,42 @@ export class ChatPlan {
           let participants: any[] = [];
           let aiModelId: string | undefined;
           try {
-            // Get participants directly from GroupPlan (uses ChannelInfo → HashGroup)
+            // Get participants directly from Topic → ChannelInfo → HashGroup
             let participantIds: string[] = [];
 
-            if (this.groupPlan) {
-              try {
-                const result = await this.groupPlan.getTopicParticipants({ topicId });
-                if (result.success && result.participants) {
-                  participantIds = result.participants.map((id: any) => String(id));
+            try {
+              // Load ChannelInfo from topic.channel
+              const channelResult = await getObjectByIdHash<ChannelInfo>(topic.channel);
+              const channelInfo = channelResult.obj;
+
+              if (channelInfo.participants) {
+                // Load HashGroup to get actual participant IDs
+                const hashGroup = await getObject(channelInfo.participants) as HashGroup<Person>;
+                if (hashGroup.person) {
+                  participantIds = Array.from(hashGroup.person).map((id: any) => String(id));
                 }
-                console.log(`[ChatPlan] Topic ${topicId} (${name}) - ${participantIds.length} participants`);
-              } catch (e) {
-                console.log(`[ChatPlan] Topic ${topicId} (${name}) - no participants found`);
               }
+              console.log(`[ChatPlan] Topic ${topicId} (${name}) - ${participantIds.length} participants from ChannelInfo`);
+            } catch (e) {
+              console.warn(`[ChatPlan] Topic ${topicId} (${name}) - failed to get participants from ChannelInfo:`, e);
             }
 
             if (participantIds.length === 0) {
-              console.log(`[ChatPlan] Topic ${topicId} (${name}) - using fallback participants`);
-              // Fallback: Add current user as participant
+              // Last resort fallback - shouldn't happen if ChannelInfo exists
+              console.warn(`[ChatPlan] Topic ${topicId} (${name}) - no participants in ChannelInfo, using owner only`);
               const currentUserId = this.nodeOneCore.ownerId;
               if (currentUserId) {
-                let ownerName = 'You';
-
-                // Try to get the owner's name from LeuteModel
-                if (this.nodeOneCore.leuteModel) {
-                  try {
-                    const me = await this.nodeOneCore.leuteModel.me();
-                    if (me) {
-                      const profile = await me.mainProfile();
-                      if (profile) {
-                        const personName = (profile as any).personDescriptions?.find((d: any) => d.$type$ === 'PersonName');
-                        ownerName = personName?.name || (profile as any).name || 'You';
-                      }
-                    }
-                  } catch (e) {
-                    // Use default name
-                  }
-                }
-
-                // Check if this is an AI topic and get the AI participant
-                if (this.nodeOneCore.aiAssistantModel) {
-                  const aiPersonId = this.nodeOneCore.aiAssistantModel.getAIPersonForTopic(topicId);
-                  if (aiPersonId) {
-                    const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(aiPersonId);
-                    if (modelId) {
-                      participants = [
-                        { id: currentUserId, name: ownerName, isLLM: false },
-                        { id: aiPersonId, name: modelId, isLLM: true }
-                      ];
-                      aiModelId = modelId;
-                    } else {
-                      participants = [{ id: currentUserId, name: ownerName, isLLM: false }];
-                    }
-                  } else {
-                    participants = [{ id: currentUserId, name: ownerName, isLLM: false }];
-                  }
-                } else {
-                  participants = [{ id: currentUserId, name: ownerName, isLLM: false }];
-                }
+                participantIds = [String(currentUserId)];
               }
-            } else {
-              console.log(`[ChatPlan] Topic ${topicId} (${name}) - enriching ${participantIds.length} participants...`);
-              const { getObjectByIdHash } = await import('@refinio/one.core/lib/storage-versioned-objects.js');
+            }
 
-              // Enrich each participant with name and avatar color
-              participants = await Promise.all(participantIds.map(async (participantId) => {
-                    let name = 'Unknown';
-                    let color: string | undefined;
-                    let isAI = false;
+            console.log(`[ChatPlan] Topic ${topicId} (${name}) - enriching ${participantIds.length} participants...`);
+
+            // Enrich each participant with name and avatar color
+            participants = await Promise.all(participantIds.map(async (participantId) => {
+              let name = 'Unknown';
+              let color: string | undefined;
+              let isAI = false;
 
                     // Load avatar color from AvatarPreference storage
                     try {
@@ -1019,14 +983,13 @@ export class ChatPlan {
                       }
                     }
 
-                return {
-                  id: participantId,
-                  name,
-                  isAI,
-                  color
-                };
-              }));
-            }
+              return {
+                id: participantId,
+                name,
+                isAI,
+                color
+              };
+            }));
           } catch (error) {
             console.error(`[ChatPlan] Error fetching participants for topic ${topicId}:`, error);
 
@@ -1347,26 +1310,24 @@ export class ChatPlan {
     console.log(`[ChatPlan] Created Group: ${groupIdHash.substring(0, 8)}`);
 
     // Step 3: Create Topic referencing Group
+    // Channel identity is based on participants only (no owner)
     const topic = await this.nodeOneCore.topicModel.createGroupTopic(
       name,
-      groupIdHash,
-      undefined, // topicId (auto-generated)
-      this.nodeOneCore.ownerId
+      groupIdHash
+      // topicId auto-generated
     );
     const topicIdHash = await calculateIdHashOfObj(topic);
 
     console.log(`[ChatPlan] Created Topic: ${topicIdHash.substring(0, 8)}`);
 
     // Step 4: Grant access via HashGroup
+    // Note: We only grant access to Topic, NOT to ChannelInfo separately.
+    // CHUM follows Topic.channel (referenceToId) automatically, fetching ChannelInfo
+    // as a child of Topic. This ensures ChannelInfo is available before Topic is
+    // processed by listeners (children fetched before root).
     const accessRequests: SetAccessParam[] = [
       {
         id: topicIdHash,
-        person: [],
-        hashGroup: [hashGroupHash],
-        mode: SET_ACCESS_MODE.ADD
-      },
-      {
-        id: topic.channel,
         person: [],
         hashGroup: [hashGroupHash],
         mode: SET_ACCESS_MODE.ADD

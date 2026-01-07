@@ -16,6 +16,8 @@ import type { Person, Group, HashGroup } from '@refinio/one.core/lib/recipes.js'
 import type { Topic } from '@refinio/one.models/lib/recipes/ChatRecipes.js';
 import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes.js';
 import type TopicModel from '@refinio/one.models/lib/models/Chat/TopicModel.js';
+import { createAccess } from '@refinio/one.core/lib/access.js';
+import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 
 /**
  * Result from creating a topic
@@ -121,20 +123,36 @@ export class GroupPlan {
    * TopicModel.createGroupTopic expects a Group ID hash.
    */
   async createTopic(request: CreateTopicRequest): Promise<CreateTopicResponse> {
-    console.log(`[GroupPlan] Creating topic ${request.topicId} with ${request.participants.length} participants`);
+    console.log(`[GroupPlan] ========== CREATE TOPIC START ==========`);
+    console.log(`[GroupPlan] topicId: ${request.topicId}`);
+    console.log(`[GroupPlan] topicName: ${request.topicName}`);
+    console.log(`[GroupPlan] this.ownerId: ${String(this.ownerId)}`);
+    console.log(`[GroupPlan] this.ownerId type: ${typeof this.ownerId}`);
+    console.log(`[GroupPlan] request.participants count: ${request.participants.length}`);
+    console.log(`[GroupPlan] request.participants:`, request.participants.map(p => String(p).substring(0, 16)));
 
     try {
       // Ensure owner is included in participants
       const allParticipants = [...request.participants];
-      if (!allParticipants.includes(this.ownerId)) {
+      const ownerAlreadyIncluded = allParticipants.some(p => String(p) === String(this.ownerId));
+      console.log(`[GroupPlan] Owner already in participants? ${ownerAlreadyIncluded}`);
+
+      if (!ownerAlreadyIncluded) {
         allParticipants.unshift(this.ownerId);
+        console.log(`[GroupPlan] Added owner to participants`);
       }
+
+      console.log(`[GroupPlan] Final allParticipants count: ${allParticipants.length}`);
+      console.log(`[GroupPlan] Final allParticipants:`, allParticipants.map(p => String(p).substring(0, 16)));
 
       // Step 1: Create HashGroup with participants
       const hashGroupObj: HashGroup<Person> = {
         $type$: 'HashGroup',
         person: new Set(allParticipants)
       };
+      console.log(`[GroupPlan] HashGroup person Set size: ${hashGroupObj.person.size}`);
+      console.log(`[GroupPlan] HashGroup members:`, Array.from(hashGroupObj.person).map(p => String(p).substring(0, 16)));
+
       const hashGroupResult = await this.storageDeps.storeUnversionedObject(hashGroupObj);
       const hashGroupHash = hashGroupResult.hash as SHA256Hash<HashGroup<Person>>;
 
@@ -152,11 +170,12 @@ export class GroupPlan {
       console.log(`[GroupPlan] Created Group: ${String(groupIdHash).substring(0, 8)}`);
 
       // Step 3: Create topic via TopicModel with Group ID hash
+      // Channel identity is based on participants only (no owner), ensuring
+      // consistent idHash across all participants.
       const topic = await this.topicModel.createGroupTopic(
         request.topicName,
         groupIdHash,
-        request.topicId,
-        this.ownerId
+        request.topicId
       );
 
       const topicIdHash = await this.storageDeps.calculateIdHashOfObj(topic);
