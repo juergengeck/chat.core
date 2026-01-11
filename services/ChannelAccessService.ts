@@ -100,41 +100,32 @@ export async function grantMessageAccessToPerson(channelEntry: any, personId: SH
 /**
  * Grant mutual access between two persons for a channel
  * Used for federation between browser and Node instances
+ *
+ * NOTE: ChannelInfo identity is now based on {participants, discriminator}, not {id, owner}
+ * The participantsHash is used to create a single shared channel for both persons
  */
-export async function grantMutualChannelAccess(channelId: string, person1Id: SHA256IdHash<Person>, person2Id: SHA256IdHash<Person>): Promise<boolean> {
+export async function grantMutualChannelAccess(participantsHash: SHA256Hash<HashGroup<Person>>, person1Id: SHA256IdHash<Person>, person2Id: SHA256IdHash<Person>, discriminator?: string): Promise<boolean> {
   try {
-    console.log(`[ChannelAccess] Setting up mutual access for channel ${channelId}`)
+    console.log(`[ChannelAccess] Setting up mutual access for channel with participants ${participantsHash?.substring(0, 8)}`)
     console.log(`[ChannelAccess] Between ${person1Id?.substring(0, 8)} and ${person2Id?.substring(0, 8)}`)
-    
-    // Create channel info hashes for both possible owners
-    const channelInfo1Hash = await calculateIdHashOfObj({
+
+    // Calculate channel info hash using participants + discriminator (identity fields)
+    const channelInfoHash = await calculateIdHashOfObj({
       $type$: 'ChannelInfo',
-      id: channelId,
-      owner: person1Id
+      participants: participantsHash,
+      ...(discriminator !== undefined && { discriminator })
     })
-    
-    const channelInfo2Hash = await calculateIdHashOfObj({
-      $type$: 'ChannelInfo',
-      id: channelId,
-      owner: person2Id
-    })
-    
-    // Grant mutual access
+
+    // Grant mutual access - both persons can access the shared channel
     await createAccess([
       {
-        id: channelInfo1Hash,
-        person: [person2Id], // Person 2 can access Person 1's channel
-        hashGroup: [],
-        mode: SET_ACCESS_MODE.ADD
-      },
-      {
-        id: channelInfo2Hash,
-        person: [person1Id], // Person 1 can access Person 2's channel
+        id: channelInfoHash,
+        person: [person1Id, person2Id],
         hashGroup: [],
         mode: SET_ACCESS_MODE.ADD
       }
     ])
-    
+
     console.log('[ChannelAccess] ✅ Mutual access established')
     return true
   } catch (error) {
@@ -204,11 +195,11 @@ export async function setupBrowserNodeChannelAccess(nodeOwnerId: SHA256IdHash<Pe
 
       // Grant access to browser for all Node's channels
       if (channelOwner === nodeOwnerId) {
-        // Get channelInfoIdHash from the channelInfo
+        // Get channelInfoIdHash from the channelInfo (identity = participants + discriminator)
         const channelInfoIdHash = await calculateIdHashOfObj({
           $type$: 'ChannelInfo',
           participants: channelInfo.participants,
-          owner: channelOwner
+          ...(channelInfo.discriminator !== undefined && { discriminator: channelInfo.discriminator })
         })
         await grantChannelAccessToPerson(channelInfoIdHash, browserPersonId)
       }
@@ -226,10 +217,11 @@ export async function setupBrowserNodeChannelAccess(nodeOwnerId: SHA256IdHash<Pe
     if (appChannelInfos.length > 0) {
       console.log('[ChannelAccess] Found app data channel, ensuring access...')
       for (const channelInfo of appChannelInfos) {
+        // Identity = participants + discriminator (owner is NOT part of identity)
         const channelInfoIdHash = await calculateIdHashOfObj({
           $type$: 'ChannelInfo',
           participants: channelInfo.participants,
-          owner: channelInfo.owner
+          ...(channelInfo.discriminator !== undefined && { discriminator: channelInfo.discriminator })
         })
         await grantChannelAccessToPerson(channelInfoIdHash, browserPersonId)
       }
