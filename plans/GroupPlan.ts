@@ -213,8 +213,9 @@ export class GroupPlan {
       let topicIdHash = this.topicCache.get(request.topicId);
 
       // If not in cache, try to find via TopicModel
+      // topicId is expected to be the idHash string
       if (!topicIdHash) {
-        const topic = await this.topicModel.findTopic(request.topicId);
+        const topic = await this.topicModel.findTopic(request.topicId as SHA256IdHash<Topic>);
         if (!topic) {
           return {
             success: false,
@@ -243,9 +244,10 @@ export class GroupPlan {
 
   /**
    * Get participants for a topic from its ChannelInfo
+   * @param topicId - The Topic's computed idHash (as string)
    */
   private async getParticipantsForTopic(topicId: string): Promise<SHA256IdHash<Person>[]> {
-    const topic = await this.topicModel.findTopic(topicId);
+    const topic = await this.topicModel.findTopic(topicId as SHA256IdHash<Topic>);
     if (!topic) {
       throw new Error(`Topic ${topicId} not found`);
     }
@@ -283,12 +285,13 @@ export class GroupPlan {
 
   /**
    * Add participants to an existing topic
+   * @param request.topicId - The Topic's computed idHash (as string)
    */
   async addParticipants(request: AddParticipantsRequest): Promise<AddParticipantsResponse> {
     console.log(`[GroupPlan] Adding ${request.participants.length} participants to topic ${request.topicId}`);
 
     try {
-      const topic = await this.topicModel.findTopic(request.topicId);
+      const topic = await this.topicModel.findTopic(request.topicId as SHA256IdHash<Topic>);
       if (!topic) {
         throw new Error(`Topic ${request.topicId} not found`);
       }
