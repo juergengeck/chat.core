@@ -17,6 +17,7 @@ import type { ChannelInfo } from '@refinio/one.models/lib/recipes/ChannelRecipes
 import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
 import { getObjectByIdHash } from '@refinio/one.core/lib/storage-versioned-objects.js';
 import { getObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
 import { GroupPlan as GroupPlanImpl, GroupPlanStorageDeps } from './GroupPlan.js';
 import { createP2PTopic } from '../services/P2PTopicService.js';
 
@@ -517,6 +518,30 @@ export class ChatPlan {
       const allMessages = await topicRoom.retrieveAllMessages();
       console.log('[ChatPlan.getMessages] 📨 Retrieved messages:', allMessages.length);
 
+      // DEBUG: Log raw message structure
+      if (allMessages.length > 0) {
+        console.log('[ChatPlan.getMessages] 🔍 DEBUG: First message raw:', JSON.stringify({
+          id: allMessages[0].id,
+          dataKeys: allMessages[0].data ? Object.keys(allMessages[0].data) : 'no data',
+          dataType: allMessages[0].data?.$type$,
+          dataText: allMessages[0].data?.text?.substring(0, 50),
+          hasData: !!allMessages[0].data,
+          author: allMessages[0].author
+        }));
+        // Log last message if different
+        if (allMessages.length > 1) {
+          const last = allMessages[allMessages.length - 1];
+          console.log('[ChatPlan.getMessages] 🔍 DEBUG: Last message raw:', JSON.stringify({
+            id: last.id,
+            dataKeys: last.data ? Object.keys(last.data) : 'no data',
+            dataType: last.data?.$type$,
+            dataText: last.data?.text?.substring(0, 50),
+            hasData: !!last.data,
+            author: last.author
+          }));
+        }
+      }
+
       // Map ObjectData to UI format - extract the actual message data and look up sender names
       const formattedMessages = await Promise.all(allMessages.map(async (msg: any) => {
         let senderName = 'Unknown';
@@ -525,17 +550,11 @@ export class ChatPlan {
         const sender = msg.author || msg.data?.sender;
 
         // Detect if sender is an AI using AIAssistantModel (check FIRST)
+        // AI Persons have profiles in LeuteModel like any other contact - name lookup happens below
         let isAI = false;
         if (sender && this.nodeOneCore.aiAssistantModel) {
           try {
             isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
-            // If it's an AI, try to get the model name as display name
-            if (isAI) {
-              const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(sender);
-              if (modelId) {
-                senderName = modelId;
-              }
-            }
           } catch (e) {
             // If detection fails, default to false
             isAI = false;
@@ -788,7 +807,7 @@ export class ChatPlan {
             if (this.nodeOneCore.aiAssistantModel.isAIPerson(participantId)) {
               const modelId = this.nodeOneCore.aiAssistantModel.getModelIdForPersonId(participantId);
               if (modelId) {
-                this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, participantId);
+                await this.nodeOneCore.aiAssistantModel.registerAITopic(topicId, participantId);
                 console.error(`[ChatPlan] Detected AI participant ${participantId.substring(0, 8)} with model: ${modelId}`);
 
                 // Default chats (hi/lama) are handled by AITopicManager callback
@@ -837,24 +856,17 @@ export class ChatPlan {
       const offset = request.offset || 0;
 
       const topics = await this.nodeOneCore.topicModel.topics.all();
-      console.log(`[ChatPlan] getConversations: Found ${topics.length} topics:`, topics.map((t: any) => ({ id: t.id, name: t.name })));
 
       // Convert to conversation format
       const conversations = await Promise.all(
         topics.map(async (topic: any) => {
-          const topicId = topic.id;
-          const name = topic.name;
-          console.log(`[ChatPlan] Processing topic: ${topicId} (${name})`);
+          // Calculate topic ID hash from Topic object
+          const topicId = await calculateIdHashOfObj(topic as Topic);
+          const name = topic.displayName ?? topic.originalName ?? topicId.substring(0, 16);
+          console.log(`[ChatPlan] Processing topic: ${name} (${topicId.substring(0, 16)})`);
 
-          // Get topic idHash for version history lookup
-          let topicIdHash: string | undefined;
-          try {
-            const idHash = await this.nodeOneCore.topicModel.topics.queryIdHashById(topicId);
-            topicIdHash = idHash ? String(idHash) : undefined;
-            console.log(`[ChatPlan] Topic ${topicId} idHash: ${topicIdHash?.substring(0, 16) || 'undefined'}`);
-          } catch (e) {
-            console.warn(`[ChatPlan] Failed to get idHash for ${topicId}:`, e);
-          }
+          // topicId is already the idHash (calculated from Topic object above)
+          const topicIdHash = String(topicId);
 
           // Get participants from topic's ChannelInfo with enriched data (names)
           // ALSO extract AI model info from participants (if any AI contact is found)
@@ -1060,14 +1072,20 @@ export class ChatPlan {
             }
           }
 
-          // Resolve display name for P2P topics (format: hash1<->hash2)
+          // Resolve display name for P2P topics (HashGroup-based ID)
           // P2P topics should show the OTHER participant's name, not the raw hash format
           let displayName = name || topicId;
-          const p2pRegex = /^([0-9a-f]{64})<->([0-9a-f]{64})$/;
-          const p2pMatch = topicId.match(p2pRegex);
-          if (p2pMatch && this.nodeOneCore.leuteModel) {
-            // Extract both participant IDs and find the OTHER one
-            const [, personA, personB] = p2pMatch;
+          const isP2P = await this.nodeOneCore.topicModel?.isOneToOneChatAsync?.(topic) ?? false;
+          if (isP2P && this.nodeOneCore.leuteModel && this.nodeOneCore.topicModel) {
+            // Extract participant IDs from HashGroup and find the OTHER one
+            let personA: string, personB: string;
+            try {
+              [personA, personB] = await this.nodeOneCore.topicModel.getOneToOneChatParticipants(topic);
+            } catch {
+              // Not a valid P2P topic
+              personA = '';
+              personB = '';
+            }
             const myId = String(this.nodeOneCore.ownerId);
             const otherId = (personA === myId) ? personB : personA;
 
@@ -1176,10 +1194,14 @@ export class ChatPlan {
         throw new Error(`Conversation not found: ${request.conversationId}`);
       }
 
+      // Calculate topic ID hash from Topic object
+      const topicIdHash = await calculateIdHashOfObj(topic as Topic);
+      const topicDisplayName = topic.displayName ?? topic.originalName ?? topicIdHash.substring(0, 16);
+
       // Convert to conversation format
       const conversation: any = {
-        id: topic.id,
-        name: topic.name || topic.id,
+        id: topicIdHash,
+        name: topicDisplayName,
         createdAt: topic.creationTime ? new Date(topic.creationTime).toISOString() : new Date().toISOString(),
         participants: topic.members || []
       };
@@ -1216,22 +1238,17 @@ export class ChatPlan {
       console.log('[ChatPlan]   Local person:', localPersonId?.substring(0, 8));
       console.log('[ChatPlan]   Remote person:', remotePersonId?.substring(0, 8));
 
-      // Use P2PTopicService to create the topic
-      const { topicRoom, wasCreated } = await createP2PTopic(
+      // Use P2PTopicService to create the topic (returns HashGroup-based topicId)
+      const { topicRoom, wasCreated, topicId } = await createP2PTopic(
         this.nodeOneCore.topicModel,
         localPersonId,
         remotePersonId
       );
 
-      // Generate P2P topic ID (lexicographically sorted)
-      const topicId = localPersonId < remotePersonId
-        ? `${localPersonId}<->${remotePersonId}`
-        : `${remotePersonId}<->${localPersonId}`;
-
       if (wasCreated) {
-        console.log('[ChatPlan] ✅ Created new P2P conversation:', topicId);
+        console.log('[ChatPlan] ✅ Created new P2P conversation:', topicId.substring(0, 16));
       } else {
-        console.log('[ChatPlan] ✅ Using existing P2P conversation:', topicId);
+        console.log('[ChatPlan] ✅ Using existing P2P conversation:', topicId.substring(0, 16));
       }
 
       return {
@@ -1294,6 +1311,15 @@ export class ChatPlan {
     const hashGroupResult = await storeUnversionedObject(hashGroup);
     const hashGroupHash = hashGroupResult.hash as SHA256Hash<HashGroup<Person>>;
 
+    // Grant access to the HashGroup object itself so it can sync via CHUM
+    const {SET_ACCESS_MODE} = await import('@refinio/one.core/lib/storage-base-common.js');
+    await createAccess([{
+      object: hashGroupHash,
+      person: [],
+      hashGroup: [hashGroupHash],
+      mode: SET_ACCESS_MODE.ADD
+    }]);
+
     console.log(`[ChatPlan] Created HashGroup: ${hashGroupHash.substring(0, 8)}`);
 
     // Step 2: Create Group referencing HashGroup
@@ -1338,12 +1364,14 @@ export class ChatPlan {
     console.log(`[ChatPlan] Granted access via HashGroup`);
 
     // Configure channel for group conversations
+    // Use topicIdHash which was already computed earlier
     if (this.nodeOneCore.channelManager) {
-      this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topic.id, true);
-      this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topic.id, true);
+      this.nodeOneCore.channelManager.setChannelSettingsAppendSenderProfile(topicIdHash, true);
+      this.nodeOneCore.channelManager.setChannelSettingsRegisterSenderProfileAtLeute(topicIdHash, true);
     }
 
-    console.log(`[ChatPlan] Group conversation created: ${topic.id}`);
+    const topicDisplayName = topic.displayName ?? topic.originalName ?? topicIdHash.substring(0, 16);
+    console.log(`[ChatPlan] Group conversation created: ${topicDisplayName}`);
 
     return topic;
   }
@@ -1436,13 +1464,14 @@ export class ChatPlan {
         throw new Error(`Topic not found: ${request.conversationId}`);
       }
 
-      // Add participants to the topic (creates new channel, stores new Topic version)
-      const updatedTopic = await this.nodeOneCore.topicModel.addPersonsToTopic(
+      // Add participants to the topic (grants access rights via HashGroup)
+      // Note: addPersonsToTopic returns void - it modifies access rights in place
+      await this.nodeOneCore.topicModel.addPersonsToTopic(
         request.participantIds as any[], // SHA256IdHash<Person>[]
         topic
       );
 
-      console.log('[ChatPlan] ✅ Added participants to topic, new channel:', updatedTopic.channel?.substring(0, 8));
+      console.log('[ChatPlan] ✅ Added participants to topic, channel:', topic.channel?.substring(0, 8));
 
       // Update GroupPlan to add participants (updates Topic → ChannelInfo → HashGroup)
       if (this.groupPlan) {
@@ -1463,7 +1492,7 @@ export class ChatPlan {
             console.log('[ChatPlan] Detected new AI participant - PersonId:', participantId.substring(0, 8), 'ModelId:', modelId);
 
             // Register the topic with the AI Person's ID hash
-            this.nodeOneCore.aiAssistantModel.registerAITopic(request.conversationId, participantId as any);
+            await this.nodeOneCore.aiAssistantModel.registerAITopic(request.conversationId, participantId as any);
 
             // Trigger introduction message from AI (fire and forget)
             this.nodeOneCore.aiAssistantModel.handleNewTopic(request.conversationId).catch((error: Error) => {

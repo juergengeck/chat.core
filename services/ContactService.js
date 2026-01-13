@@ -135,15 +135,22 @@ export class ContactService {
                 // Check if AI contact and get model ID
                 let isAI = false;
                 let modelId = undefined;
-                if (this.aiAssistantModel?.llmObjectManager) {
-                    isAI = this.aiAssistantModel.llmObjectManager.isLLMPerson(personId);
+                // Use AIAssistantPlan's public methods (isAIPerson, getModelIdForPersonId)
+                if (this.aiAssistantModel?.isAIPerson) {
+                    isAI = this.aiAssistantModel.isAIPerson(personId);
                     // If it's an AI contact, try to get its model ID
-                    if (isAI) {
-                        modelId = this.aiAssistantModel.llmObjectManager.getModelIdForPerson(personId);
+                    if (isAI && this.aiAssistantModel.getModelIdForPersonId) {
+                        modelId = this.aiAssistantModel.getModelIdForPersonId(personId);
                     }
                 }
                 if (!isAI && email && email.endsWith('@ai.local')) {
                     isAI = true;
+                }
+                // Skip private AI variants (used internally for LAMA chat)
+                // These have -private in their email prefix (e.g., lama-private@ai.local)
+                if (isAI && email && email.includes('-private@')) {
+                    console.log(`[ContactService] Skipping private AI variant: ${email}`);
+                    continue;
                 }
                 // Get display name
                 let displayName = null;

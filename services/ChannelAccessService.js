@@ -1,0 +1,241 @@
+/**
+ * Channel Access Manager
+ * Manages granular person-to-person access control for channels
+ */
+import { createAccess } from '@refinio/one.core/lib/access.js';
+import { SET_ACCESS_MODE } from '@refinio/one.core/lib/storage-base-common.js';
+import { storeUnversionedObject } from '@refinio/one.core/lib/storage-unversioned-objects.js';
+import { calculateIdHashOfObj } from '@refinio/one.core/lib/util/object.js';
+/**
+ * Helper to get participantsHash for a set of person IDs
+ */
+async function getParticipantsHash(participants) {
+    const hashGroup = {
+        $type$: 'HashGroup',
+        person: new Set(participants)
+    };
+    const result = await storeUnversionedObject(hashGroup);
+    // Grant access to the HashGroup object itself so it can sync via CHUM
+    await createAccess([{
+            object: result.hash,
+            person: [],
+            hashGroup: [result.hash],
+            mode: SET_ACCESS_MODE.ADD
+        }]);
+    return result.hash;
+}
+/**
+ * Grant a specific person access to a channel
+ * Now uses participantsHash instead of channelId
+ */
+export async function grantChannelAccessToPerson(channelInfoIdHash, personId) {
+    try {
+        console.log(`[ChannelAccess] Granting channel access to person ${personId?.substring(0, 8)}`);
+        // Grant direct person-to-person access to ChannelInfo
+        await createAccess([{
+                id: channelInfoIdHash,
+                person: [personId],
+                hashGroup: [],
+                mode: SET_ACCESS_MODE.ADD
+            }]);
+        console.log(`[ChannelAccess] ✅ ChannelInfo access granted to person ${personId?.substring(0, 8)}`);
+        return true;
+    }
+    catch (error) {
+        console.error('[ChannelAccess] Failed to grant access:', error);
+        return false;
+    }
+}
+/**
+ * Grant comprehensive access to a channel message
+ * This includes the channelEntry, data, and creationTime objects
+ */
+export async function grantMessageAccessToPerson(channelEntry, personId) {
+    try {
+        const accessGrants = [];
+        // Grant access to the channel entry itself
+        if (channelEntry.channelEntryHash) {
+            accessGrants.push({
+                id: channelEntry.channelEntryHash,
+                person: [personId],
+                hashGroup: [],
+                mode: SET_ACCESS_MODE.ADD
+            });
+        }
+        // Grant access to the message data
+        if (channelEntry.dataHash) {
+            accessGrants.push({
+                id: channelEntry.dataHash,
+                person: [personId],
+                hashGroup: [],
+                mode: SET_ACCESS_MODE.ADD
+            });
+        }
+        // Grant access to the creation time
+        if (channelEntry.creationTimeHash) {
+            accessGrants.push({
+                id: channelEntry.creationTimeHash,
+                person: [personId],
+                hashGroup: [],
+                mode: SET_ACCESS_MODE.ADD
+            });
+        }
+        if (accessGrants.length > 0) {
+            await createAccess(accessGrants);
+            console.log(`[ChannelAccess] ✅ Granted access to message objects (${accessGrants.length} grants)`);
+        }
+        return true;
+    }
+    catch (error) {
+        console.error('[ChannelAccess] Failed to grant message access:', error);
+        return false;
+    }
+}
+/**
+ * Grant mutual access between two persons for a channel
+ * Used for federation between browser and Node instances
+ *
+ * NOTE: ChannelInfo identity is now based on {participants, discriminator}, not {id, owner}
+ * The participantsHash is used to create a single shared channel for both persons
+ */
+export async function grantMutualChannelAccess(participantsHash, person1Id, person2Id, discriminator) {
+    try {
+        console.log(`[ChannelAccess] Setting up mutual access for channel with participants ${participantsHash?.substring(0, 8)}`);
+        console.log(`[ChannelAccess] Between ${person1Id?.substring(0, 8)} and ${person2Id?.substring(0, 8)}`);
+        // Calculate channel info hash using participants + discriminator (identity fields)
+        const channelInfoHash = await calculateIdHashOfObj({
+            $type$: 'ChannelInfo',
+            participants: participantsHash,
+            ...(discriminator !== undefined && { discriminator })
+        });
+        // Grant mutual access - both persons can access the shared channel
+        await createAccess([
+            {
+                id: channelInfoHash,
+                person: [person1Id, person2Id],
+                hashGroup: [],
+                mode: SET_ACCESS_MODE.ADD
+            }
+        ]);
+        console.log('[ChannelAccess] ✅ Mutual access established');
+        return true;
+    }
+    catch (error) {
+        console.error('[ChannelAccess] Failed to grant mutual access:', error);
+        return false;
+    }
+}
+/**
+ * Grant access to all channel entries for a person
+ * This ensures they can read all messages in the channel
+ */
+export async function grantChannelEntryAccess(channelManager, channelId, personId) {
+    try {
+        const channelInfos = await channelManager.getMatchingChannelInfos({
+            channelId: channelId
+        });
+        if (!channelInfos || channelInfos.length === 0) {
+            console.log('[ChannelAccess] No channel infos found');
+            return false;
+        }
+        for (const channelInfo of channelInfos) {
+            if (channelInfo.obj?.data) {
+                const accessRequests = [];
+                for (const entry of channelInfo.obj.data) {
+                    if (entry.dataHash) {
+                        accessRequests.push({
+                            object: entry.dataHash,
+                            person: [personId],
+                            hashGroup: [],
+                            mode: SET_ACCESS_MODE.ADD
+                        });
+                    }
+                }
+                if (accessRequests.length > 0) {
+                    await createAccess(accessRequests);
+                    console.log(`[ChannelAccess] Granted access to ${accessRequests.length} channel entries`);
+                }
+            }
+        }
+        return true;
+    }
+    catch (error) {
+        console.error('[ChannelAccess] Failed to grant entry access:', error);
+        return false;
+    }
+}
+/**
+ * Setup channel access when browser connects
+ * Called when browser Person ID is received
+ */
+export async function setupBrowserNodeChannelAccess(nodeOwnerId, browserPersonId, channelManager) {
+    try {
+        console.log('[ChannelAccess] Setting up browser-node channel access');
+        console.log(`[ChannelAccess] Node: ${nodeOwnerId?.substring(0, 8)}, Browser: ${browserPersonId?.substring(0, 8)}`);
+        // Get all existing channels
+        const channelInfos = await channelManager.channels();
+        for (const channelInfo of channelInfos) {
+            const channelOwner = channelInfo.owner;
+            // Grant access to browser for all Node's channels
+            if (channelOwner === nodeOwnerId) {
+                // Get channelInfoIdHash from the channelInfo (identity = participants + discriminator)
+                const channelInfoIdHash = await calculateIdHashOfObj({
+                    $type$: 'ChannelInfo',
+                    participants: channelInfo.participants,
+                    ...(channelInfo.discriminator !== undefined && { discriminator: channelInfo.discriminator })
+                });
+                await grantChannelAccessToPerson(channelInfoIdHash, browserPersonId);
+            }
+        }
+        console.log(`[ChannelAccess] ✅ Processed ${channelInfos.length} channels`);
+        // Specifically ensure "lama" channel (personal app data channel) has proper access
+        // Query by participants (nodeOwnerId's personal channel)
+        const participantsHash = await getParticipantsHash([nodeOwnerId]);
+        const appChannelInfos = await channelManager.getMatchingChannelInfos({
+            participants: participantsHash
+        });
+        if (appChannelInfos.length > 0) {
+            console.log('[ChannelAccess] Found app data channel, ensuring access...');
+            for (const channelInfo of appChannelInfos) {
+                // Identity = participants + discriminator (owner is NOT part of identity)
+                const channelInfoIdHash = await calculateIdHashOfObj({
+                    $type$: 'ChannelInfo',
+                    participants: channelInfo.participants,
+                    ...(channelInfo.discriminator !== undefined && { discriminator: channelInfo.discriminator })
+                });
+                await grantChannelAccessToPerson(channelInfoIdHash, browserPersonId);
+            }
+            console.log('[ChannelAccess] ✅ App data channel access configured');
+        }
+        // Note: Topic-specific channels are created by ChatPlan/GroupPlan for each participant
+        console.log('[ChannelAccess] Browser channels will be created per topic by ChatPlan');
+        // Set up a listener for channel updates to trace CHUM sync
+        // New callback signature: (channelInfoIdHash, participantsHash, owner, time, data)
+        channelManager.onUpdated((channelInfoIdHash, participantsHash, owner, time, data) => {
+            if (owner === browserPersonId) {
+                console.log(`[ChannelAccess] 🔔 Node received update for browser's channel ${participantsHash?.substring(0, 8)}`);
+                console.log('[ChannelAccess] Owner:', owner?.substring(0, 8));
+                console.log('[ChannelAccess] Data items:', data?.length);
+                console.log('[ChannelAccess] Has messages:', data?.some((d) => d.$type$ === 'ChatMessage'));
+                // Log the actual messages for debugging
+                const messages = data?.filter((d) => d.$type$ === 'ChatMessage');
+                messages?.forEach((msg, idx) => {
+                    console.log(`[ChannelAccess] Message ${idx + 1}:`, msg.data?.text?.substring(0, 50));
+                });
+            }
+        });
+        return true;
+    }
+    catch (error) {
+        console.error('[ChannelAccess] Failed to setup browser-node access:', error);
+        return false;
+    }
+}
+export default {
+    grantChannelAccessToPerson,
+    grantMessageAccessToPerson,
+    grantMutualChannelAccess,
+    grantChannelEntryAccess,
+    setupBrowserNodeChannelAccess
+};
+//# sourceMappingURL=ChannelAccessService.js.map

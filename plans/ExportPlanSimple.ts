@@ -147,7 +147,8 @@ export class ExportPlanSimple {
    * Format messages as Markdown
    */
   private formatAsMarkdown(messages: Message[], topic: any): string {
-    let markdown = `# ${topic.name || 'Chat Export'}\n\n`;
+    const topicName = topic.displayName ?? topic.originalName ?? 'Chat Export';
+    let markdown = `# ${topicName}\n\n`;
     markdown += `Exported: ${new Date().toISOString()}\n\n`;
     markdown += `---\n\n`;
 
@@ -170,12 +171,13 @@ export class ExportPlanSimple {
    * Format messages as HTML
    */
   private formatAsHtml(messages: Message[], topic: any): string {
+    const topicName = topic.displayName ?? topic.originalName ?? 'Chat Export';
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.escapeHtml(topic.name || 'Chat Export')}</title>
+  <title>${this.escapeHtml(topicName)}</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
@@ -235,7 +237,7 @@ export class ExportPlanSimple {
 </head>
 <body>
   <div class="header">
-    <h1>${this.escapeHtml(topic.name || 'Chat Export')}</h1>
+    <h1>${this.escapeHtml(topicName)}</h1>
     <div class="export-date">Exported: ${new Date().toLocaleString()}</div>
   </div>
 

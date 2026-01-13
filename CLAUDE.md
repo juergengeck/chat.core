@@ -95,27 +95,137 @@ RUNTIME:
 
 ```
 chat.core/
+├── api/                   # Unified API layer (NEW - Story + Cube)
+│   ├── ChatApi.ts             # Unified chat API with events
+│   ├── ChatEvents.ts          # Event types and emitter
+│   └── index.ts               # API exports
 ├── plans/                 # Pure business logic plans (RPC-style interfaces)
-│   ├── ChatPlan.ts            # Message/conversation operations
+│   ├── ChatPlan.ts            # Message/conversation operations (LEGACY)
+│   ├── StoryChatPlan.ts       # Message ops with Story provenance (NEW)
+│   ├── StoryTopicPlan.ts      # Topic ops with Story provenance (NEW)
 │   ├── GroupPlan.ts           # Group/topic management (uses TopicModel)
 │   ├── ContactsPlan.ts        # Contact management
 │   ├── ExportPlan.ts          # Export/import operations
 │   └── FeedForwardPlan.ts     # Feed forward operations
+├── indexing/              # Cube indexing (NEW - Story + Cube)
+│   ├── ChatCubeIndexer.ts     # Indexes Stories in Cube
+│   └── index.ts               # Indexing exports
+├── queries/               # Query helpers (NEW - Story + Cube)
+│   ├── ChatQueries.ts         # Cube-based message queries
+│   └── index.ts               # Query exports
+├── dimensions/            # Cube dimensions (NEW - Story + Cube)
+│   ├── ChatDimensions.ts      # when, who, topic, replyTo, plan
+│   └── index.ts               # Dimension exports
+├── recipes/               # ONE recipe definitions
+│   ├── ChatMessageRecipe.ts   # ChatMessage recipe (NEW)
+│   ├── TopicRecipe.ts         # Topic recipe (NEW)
+│   ├── LLMRecipe.ts           # LLM-related recipes
+│   └── index.ts               # Recipe exports
 ├── services/              # Reusable service layer
 │   ├── ContactService.ts      # Contact queries with AI detection
 │   ├── ProfileService.ts      # Profile/avatar management
 │   ├── P2PTopicService.ts     # P2P topic/channel creation
 │   └── ContactCreation.ts     # Helper for creating Profile/Someone objects
 ├── models/                # Domain models (currently empty)
-├── recipes/               # ONE recipe definitions
-│   ├── LLMRecipe.ts           # LLM-related recipes
-│   └── index.ts               # Recipe exports
 ├── types/                 # Custom type definitions
 │   └── AvatarPreference.ts
 └── packages/              # Build-time only (git-ignored symlinks)
     ├── one.core/
     └── one.models/
 ```
+
+## Story + Cube Architecture (NEW)
+
+The new chat architecture uses **Story** for provenance tracking and **Cube** for efficient queries.
+
+### Three-Layer Design
+
+| Layer | Object | Purpose |
+|-------|--------|---------|
+| **Data** | ChatMessage, Topic | Pure content + relationships |
+| **Fact** | Story | Records creation fact (who, when, what) |
+| **Index** | Cube | Enables efficient multi-dimensional queries |
+
+### What It Replaces
+
+| Old (ChannelManager) | New (Story + Cube) |
+|---------------------|-----|
+| `CreationTime.timestamp` | `Story.created` |
+| `LinkedListEntry.metadata` (signature) | `Story.owner` |
+| `encodeEntryId(channelIdHash, entryHash)` | `storyIdHash` |
+| Linked list traversal O(n) | Cube query O(log n) |
+
+### Key Components
+
+**ChatApi** (`api/ChatApi.ts`)
+- Unified API combining message, reaction, and topic operations
+- Event emission for UI subscriptions
+- Wraps StoryFactory for provenance tracking
+
+```typescript
+const api = new ChatApi(storyFactory, deps, cube, owner);
+await api.init();
+
+api.on('messageCreated', (event) => console.log('New:', event.content));
+
+const result = await api.sendMessage({ topicIdHash, content: 'Hello!' });
+```
+
+**StoryChatPlan** (`plans/StoryChatPlan.ts`)
+- `createMessage()`, `editMessage()`, `deleteMessage()`
+- `createReaction()`, `removeReaction()`
+- All operations wrapped with StoryFactory
+
+**StoryTopicPlan** (`plans/StoryTopicPlan.ts`)
+- `createTopic()`, `renameTopic()`
+- `addParticipant()`, `removeParticipant()`
+- Uses HashGroup for participants
+
+**ChatCubeIndexer** (`indexing/ChatCubeIndexer.ts`)
+- Listens to StoryFactory.onStoryCreated
+- Creates CubeObjects with dimension values
+- Dimensions: when, who, topic, plan, replyTo
+
+**ChatQueries** (`queries/ChatQueries.ts`)
+- `getMessagesInTopic()`, `getMessagesByPerson()`
+- `getThread()`, `getReactions()`
+- Uses Cube for O(log n) queries
+
+### Recipes
+
+**ChatMessage** (`recipes/ChatMessageRecipe.ts`)
+```typescript
+interface ChatMessage {
+    $type$: 'ChatMessage';
+    id: string;                  // UUID (isId)
+    topic: SHA256IdHash<Topic>;  // conversation (isId)
+    replyTo?: SHA256Hash<ChatMessage>;  // parent (isId)
+    reaction?: string;           // emoji (isId)
+    content?: string;            // message text
+    attachments?: SHA256Hash<any>[];
+    deleted?: boolean;
+    deletedReason?: string;
+}
+```
+
+**Topic** (`recipes/TopicRecipe.ts`)
+```typescript
+interface Topic {
+    $type$: 'Topic';
+    id: string;                  // UUID (isId)
+    name: string;                // display name
+    participants: SHA256Hash<HashGroup<Person>>;
+}
+```
+
+### Migration Path
+
+1. **Parallel**: New code uses ChatApi, old code uses ChannelManager
+2. **Backfill**: Create Stories from existing LinkedListEntries
+3. **Deprecate**: Mark ChannelManager methods as deprecated
+4. **Remove**: Delete linked list traversal code
+
+See `docs/designs/STORY-CUBE-CHAT-ARCHITECTURE.md` for full design.
 
 ### Plan Pattern (Dependency Injection)
 

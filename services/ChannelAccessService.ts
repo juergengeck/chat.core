@@ -20,6 +20,15 @@ async function getParticipantsHash(participants: SHA256IdHash<Person>[]): Promis
     person: new Set(participants)
   };
   const result = await storeUnversionedObject(hashGroup);
+
+  // Grant access to the HashGroup object itself so it can sync via CHUM
+  await createAccess([{
+    object: result.hash,
+    person: [],
+    hashGroup: [result.hash],
+    mode: SET_ACCESS_MODE.ADD
+  }]);
+
   return result.hash;
 }
 
