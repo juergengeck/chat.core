@@ -306,16 +306,29 @@ export class ChatPlan {
                 let senderName = 'Unknown';
                 // Get sender from either author or data.sender
                 const sender = msg.author || msg.data?.sender;
-                // Detect if sender is an AI using AIAssistantModel (check FIRST)
-                // AI Persons have profiles in LeuteModel like any other contact - name lookup happens below
+                // Detect if sender is an AI
+                // Check both: 1) local AI registry, 2) topic's aiParticipants (synced via CHUM)
                 let isAI = false;
-                if (sender && this.nodeOneCore.aiAssistantModel) {
-                    try {
-                        isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
+                if (sender) {
+                    // Check 1: Local AI registry (for locally created AI)
+                    if (this.nodeOneCore.aiAssistantModel) {
+                        try {
+                            isAI = this.nodeOneCore.aiAssistantModel.isAIPerson(sender);
+                        }
+                        catch (e) {
+                            // If detection fails, continue to fallback check
+                        }
                     }
-                    catch (e) {
-                        // If detection fails, default to false
-                        isAI = false;
+                    // Check 2: Topic's aiParticipants (works for synced topics from other devices)
+                    // This is the authoritative source of truth for AI participants
+                    if (!isAI && topicRoom.topic?.aiParticipants) {
+                        const senderStr = sender.toString();
+                        for (const [aiPersonId] of topicRoom.topic.aiParticipants) {
+                            if (aiPersonId.toString() === senderStr) {
+                                isAI = true;
+                                break;
+                            }
+                        }
                     }
                 }
                 // Look up sender name from LeuteModel (works for ALL participants)
@@ -778,15 +791,28 @@ export class ChatPlan {
                 // Check if this is an AI topic using AITopicManager (authoritative source)
                 let modelName;
                 let isAITopic = false;
+                let aiResponding;
                 // AUTHORITATIVE CHECK: Use topicManager to determine if this is an AI topic
                 if (this.nodeOneCore.aiAssistantModel?.topicManager?.isAITopic) {
-                    isAITopic = this.nodeOneCore.aiAssistantModel.topicManager.isAITopic(topicId);
+                    isAITopic = await this.nodeOneCore.aiAssistantModel.topicManager.isAITopic(topicId);
+                }
+                // Get aiResponding state from topic (synced via CHUM)
+                // It's a Set of AI Person IDs - if any AI is responding, we show the indicator
+                try {
+                    const topicForState = await this.nodeOneCore.topicModel?.findTopic(topicId);
+                    if (topicForState?.aiResponding && topicForState.aiResponding.size > 0) {
+                        // Return first responding AI for backwards compatibility, or could return array
+                        aiResponding = Array.from(topicForState.aiResponding)[0]?.toString();
+                    }
+                }
+                catch {
+                    // Ignore - aiResponding will be undefined
                 }
                 // Get AI model ID if it's an AI topic
                 if (isAITopic) {
                     // Use aiModelId from participants if found, otherwise get from topicManager
                     if (!aiModelId && this.nodeOneCore.aiAssistantModel?.topicManager?.getAIPersonForTopic) {
-                        const aiPersonId = this.nodeOneCore.aiAssistantModel.topicManager.getAIPersonForTopic(topicId);
+                        const aiPersonId = await this.nodeOneCore.aiAssistantModel.topicManager.getAIPersonForTopic(topicId);
                         if (aiPersonId && this.nodeOneCore.aiAssistantModel?.aiManager?.getLLMId) {
                             aiModelId = await this.nodeOneCore.aiAssistantModel.aiManager.getLLMId(aiPersonId);
                         }
@@ -877,7 +903,8 @@ export class ChatPlan {
                     unreadCount: 0,
                     isAITopic,
                     aiModelId,
-                    modelName
+                    modelName,
+                    aiResponding // AI Person ID if AI is currently responding (synced via CHUM)
                 };
             }));
             // Sort by last activity
@@ -1037,7 +1064,42 @@ export class ChatPlan {
         );
         const topicIdHash = await calculateIdHashOfObj(topic);
         console.log(`[ChatPlan] Created Topic: ${topicIdHash.substring(0, 8)}`);
-        // Step 4: Grant access via HashGroup
+        // Step 4: Identify AI participants and update topic with aiParticipants
+        const aiParticipants = new Map();
+        const aiAssistantModel = this.nodeOneCore.aiAssistantModel;
+        if (aiAssistantModel?.isAIPerson) {
+            for (const participantId of allParticipants) {
+                try {
+                    const isAI = aiAssistantModel.isAIPerson(participantId);
+                    if (isAI) {
+                        // Get the AI's default settings (all TopicAISettings fields required)
+                        const defaultSettings = {
+                            respond: true,
+                            analyse: false,
+                            mute: false,
+                            ignore: false,
+                            joinedAt: Date.now()
+                        };
+                        aiParticipants.set(participantId, defaultSettings);
+                        console.log(`[ChatPlan] Identified AI participant: ${String(participantId).substring(0, 8)}`);
+                    }
+                }
+                catch (err) {
+                    // Participant is not an AI, ignore
+                }
+            }
+        }
+        // If we found AI participants, update the topic
+        if (aiParticipants.size > 0) {
+            console.log(`[ChatPlan] Setting aiParticipants on topic (${aiParticipants.size} AIs)`);
+            const updatedTopic = {
+                ...topic,
+                aiParticipants
+            };
+            await storeVersionedObject(updatedTopic);
+            console.log(`[ChatPlan] Topic updated with aiParticipants`);
+        }
+        // Step 5: Grant access via HashGroup
         // Note: We only grant access to Topic, NOT to ChannelInfo separately.
         // CHUM follows Topic.channel (referenceToId) automatically, fetching ChannelInfo
         // as a child of Topic. This ensures ChannelInfo is available before Topic is
