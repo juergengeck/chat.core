@@ -608,17 +608,82 @@ export class ChatPlan {
             }
             const limit = request.limit || 20;
             const offset = request.offset || 0;
-            const topics = await this.nodeOneCore.topicModel.topics.all();
+            // OPTIMIZATION: Use allWithIdHash() to avoid recalculating hashes
+            const topicsWithHashes = await this.nodeOneCore.topicModel.topics.allWithIdHash();
+            // OPTIMIZATION: Build contact lookup map ONCE before processing topics
+            const contactMap = new Map();
+            let currentUserName = 'You';
+            // Cache current user info
+            if (this.nodeOneCore.leuteModel && this.nodeOneCore.ownerId) {
+                try {
+                    const me = await this.nodeOneCore.leuteModel.me();
+                    if (me) {
+                        const profile = await me.mainProfile();
+                        if (profile) {
+                            const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
+                            currentUserName = personName?.name || profile.name || 'You';
+                        }
+                    }
+                    contactMap.set(String(this.nodeOneCore.ownerId), { name: currentUserName, isAI: false });
+                }
+                catch (e) {
+                    // Use default 'You'
+                }
+            }
+            // Cache AI contacts from LLMObjectManager
+            if (this.nodeOneCore.llmObjectManager) {
+                try {
+                    const allLLMs = this.nodeOneCore.llmObjectManager.getAllLLMObjects();
+                    for (const llm of allLLMs) {
+                        const llmData = llm;
+                        if (llmData.personId && llmData.modelId) {
+                            contactMap.set(String(llmData.personId), {
+                                name: llmData.modelId,
+                                isAI: true,
+                                modelId: llmData.modelId
+                            });
+                        }
+                    }
+                }
+                catch (e) {
+                    // Continue without AI contacts
+                }
+            }
+            // Cache other contacts from LeuteModel - load ONCE!
+            if (this.nodeOneCore.leuteModel) {
+                try {
+                    const others = await this.nodeOneCore.leuteModel.others();
+                    await Promise.all(others.map(async (someone) => {
+                        try {
+                            const personId = await someone.mainIdentity();
+                            if (personId && !contactMap.has(String(personId))) {
+                                const profile = await someone.mainProfile();
+                                let name = 'Contact';
+                                if (profile) {
+                                    const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
+                                    name = personName?.name || profile.name || 'Contact';
+                                }
+                                contactMap.set(String(personId), { name, isAI: false });
+                            }
+                        }
+                        catch (e) {
+                            // Skip this contact
+                        }
+                    }));
+                }
+                catch (e) {
+                    // Continue without other contacts
+                }
+            }
+            console.log(`[ChatPlan] Built contact cache with ${contactMap.size} entries`);
             // Convert to conversation format
-            const conversations = await Promise.all(topics.map(async (topic) => {
-                // Calculate topic ID hash from Topic object
-                const topicId = await calculateIdHashOfObj(topic);
+            const conversations = await Promise.all(topicsWithHashes.map(async ({ topic, idHash }) => {
+                // Use idHash directly - no need to recalculate!
+                const topicId = idHash;
                 const name = topic.displayName ?? topic.originalName ?? topicId.substring(0, 16);
-                console.log(`[ChatPlan] Processing topic: ${name} (${topicId.substring(0, 16)})`);
-                // topicId is already the idHash (calculated from Topic object above)
                 const topicIdHash = String(topicId);
                 // Get participants from topic's ChannelInfo with enriched data (names)
-                // ALSO extract AI model info from participants (if any AI contact is found)
+                // OPTIMIZED: Use pre-built contactMap for O(1) lookup instead of nested loops
                 let participants = [];
                 let aiModelId;
                 try {
@@ -635,121 +700,43 @@ export class ChatPlan {
                                 participantIds = Array.from(hashGroup.person).map((id) => String(id));
                             }
                         }
-                        console.log(`[ChatPlan] Topic ${topicId} (${name}) - ${participantIds.length} participants from ChannelInfo`);
                     }
                     catch (e) {
-                        console.warn(`[ChatPlan] Topic ${topicId} (${name}) - failed to get participants from ChannelInfo:`, e);
+                        // Failed to get participants from ChannelInfo
                     }
                     if (participantIds.length === 0) {
-                        // Last resort fallback - shouldn't happen if ChannelInfo exists
-                        console.warn(`[ChatPlan] Topic ${topicId} (${name}) - no participants in ChannelInfo, using owner only`);
+                        // Fallback to owner
                         const currentUserId = this.nodeOneCore.ownerId;
                         if (currentUserId) {
                             participantIds = [String(currentUserId)];
                         }
                     }
-                    console.log(`[ChatPlan] Topic ${topicId} (${name}) - enriching ${participantIds.length} participants...`);
-                    // Enrich each participant with name and avatar color
-                    participants = await Promise.all(participantIds.map(async (participantId) => {
-                        let name = 'Unknown';
-                        let color;
-                        let isAI = false;
-                        // Load avatar color from AvatarPreference storage
-                        try {
-                            const result = await getObjectByIdHash(participantId);
-                            if (result && result.obj && typeof result.obj === 'object' && '$type$' in result.obj && result.obj.$type$ === 'AvatarPreference') {
-                                color = result.obj.color;
+                    // OPTIMIZED: Use cached contactMap for O(1) lookup per participant
+                    participants = participantIds.map((participantId) => {
+                        const contact = contactMap.get(participantId);
+                        if (contact) {
+                            // Found in cache - capture AI model ID if present
+                            if (contact.isAI && contact.modelId) {
+                                aiModelId = contact.modelId;
                             }
+                            return {
+                                id: participantId,
+                                name: contact.name,
+                                isAI: contact.isAI,
+                                color: undefined // TODO: cache avatar colors too
+                            };
                         }
-                        catch (e) {
-                            // No avatar preference exists, color will be undefined
-                        }
-                        // Get name from Leute model for ALL participants
-                        if (this.nodeOneCore.leuteModel) {
-                            try {
-                                // Check if it's current user
-                                if (participantId === this.nodeOneCore.ownerId) {
-                                    const me = await this.nodeOneCore.leuteModel.me();
-                                    if (me) {
-                                        const profile = await me.mainProfile();
-                                        if (profile) {
-                                            const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
-                                            name = personName?.name || profile.name || 'You';
-                                        }
-                                    }
-                                }
-                                else {
-                                    // Check if it's an AI participant by reading LLM objects from storage
-                                    if (this.nodeOneCore.llmObjectManager) {
-                                        try {
-                                            // CRITICAL: Ensure LLMObjectManager is initialized before querying
-                                            // Defensive check to prevent silent failures if initialization order changes
-                                            if (!this.nodeOneCore.llmObjectManager.initialized) {
-                                                console.warn(`[ChatPlan] ⚠️  LLMObjectManager not initialized - initializing now...`);
-                                                await this.nodeOneCore.llmObjectManager.initialize();
-                                                console.log(`[ChatPlan] ✅ LLMObjectManager initialized (late init)`);
-                                            }
-                                            // Query LLM objects to find one with this personId
-                                            const allLLMs = this.nodeOneCore.llmObjectManager.getAllLLMObjects();
-                                            console.log(`[ChatPlan] 🔍 DEBUG: Checking ${allLLMs.length} LLM objects for participant ${participantId.substring(0, 8)}...`);
-                                            for (const llm of allLLMs) {
-                                                const llmData = llm;
-                                                console.log(`[ChatPlan] 🔍 DEBUG: Checking LLM - personId: ${llmData.personId?.toString().substring(0, 8)}, modelId: ${llmData.modelId}`);
-                                                if (llmData.personId && llmData.personId.toString() === participantId) {
-                                                    // Found AI contact - use modelId from LLM object (from storage)
-                                                    const modelId = llmData.modelId;
-                                                    console.log(`[ChatPlan] 🔍 DEBUG: ✅ FOUND AI CONTACT! modelId:`, modelId);
-                                                    if (modelId) {
-                                                        name = modelId;
-                                                        isAI = true; // Mark as AI participant
-                                                        // CAPTURE the AI model ID for this conversation
-                                                        aiModelId = modelId;
-                                                        console.log(`[ChatPlan] 🔍 DEBUG: Set aiModelId to:`, aiModelId);
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        catch (e) {
-                                            console.warn(`[ChatPlan] Failed to check if participant is AI:`, e);
-                                        }
-                                    }
-                                    // If not AI or AI check failed, check other contacts
-                                    if (name === 'Unknown') {
-                                        const others = await this.nodeOneCore.leuteModel.others();
-                                        for (const someone of others) {
-                                            try {
-                                                const personId = await someone.mainIdentity();
-                                                if (personId && personId.toString() === participantId) {
-                                                    const profile = await someone.mainProfile();
-                                                    if (profile) {
-                                                        const personName = profile.personDescriptions?.find((d) => d.$type$ === 'PersonName');
-                                                        name = personName?.name || profile.name || 'User';
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                            catch (e) {
-                                                // Continue to next person
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch (error) {
-                                console.warn(`[ChatPlan] Could not get name for participant ${participantId}:`, error);
-                            }
-                        }
+                        // Not in cache - unknown participant
                         return {
                             id: participantId,
-                            name,
-                            isAI,
-                            color
+                            name: 'Unknown',
+                            isAI: false,
+                            color: undefined
                         };
-                    }));
+                    });
                 }
                 catch (error) {
-                    console.error(`[ChatPlan] Error fetching participants for topic ${topicId}:`, error);
+                    console.error(`[ChatPlan] Error fetching participants for topic ${topicIdHash}:`, error);
                     // Fallback on error: Add current user as participant
                     if (participants.length === 0) {
                         const currentUserId = this.nodeOneCore.ownerId;

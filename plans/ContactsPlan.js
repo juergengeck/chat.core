@@ -432,8 +432,18 @@ export class ContactsPlan {
             // AIManager (aiByPerson cache) and LLMObjectManager (llmObjects cache)
             if (personInfo.modelId && this.nodeOneCore.aiAssistantModel) {
                 console.log(`[ContactsPlan] Creating AI contact via AIAssistantPlan: ${personInfo.name} (${personInfo.modelId})`);
+                // Create personality with creation context for the AI
+                // Use passed creationContext if available (from LLM name generation), otherwise create basic one
+                const personality = {
+                    creationContext: personInfo.creationContext || {
+                        device: typeof navigator !== 'undefined' ? navigator.userAgent?.split('/')[0] || 'LAMA' : 'LAMA',
+                        locale: typeof navigator !== 'undefined' ? navigator.language || 'en' : 'en',
+                        time: Date.now(),
+                        app: 'LAMA'
+                    }
+                };
                 // ensureAIForModel creates Person/Profile/Someone AND registers in AIManager
-                const personIdHash = await this.nodeOneCore.aiAssistantModel.ensureAIForModel(personInfo.modelId, personInfo.name, personInfo.email);
+                const personIdHash = await this.nodeOneCore.aiAssistantModel.ensureAIForModel(personInfo.modelId, personInfo.name, personInfo.email, personality);
                 console.log(`[ContactsPlan] AI contact created: ${personIdHash.toString().substring(0, 8)}...`);
                 return {
                     success: true,

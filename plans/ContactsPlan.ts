@@ -474,7 +474,7 @@ export class ContactsPlan {
    *
    * ASSEMBLY TRIGGER: Case #5 - Store Someone/Profile (Identity Domain)
    */
-  async addContact(personInfo: { name: string; email: string; modelId?: string }): Promise<{ success: boolean; contact?: any; error?: string }> {
+  async addContact(personInfo: { name: string; email: string; modelId?: string; creationContext?: { device: string; locale: string; time: number; app: string; creationStory?: string } }): Promise<{ success: boolean; contact?: any; error?: string }> {
     const userId = this.nodeOneCore.ownerId || this.nodeOneCore.leuteModel?.myMainIdentity();
 
     // Wrap operation with Story + Assembly recording
@@ -525,7 +525,7 @@ export class ContactsPlan {
   /**
    * Internal implementation of addContact (wrapped by Story+Assembly recording)
    */
-  private async addContactInternal(personInfo: { name: string; email: string; modelId?: string }): Promise<{ success: boolean; contact?: any; error?: string }> {
+  private async addContactInternal(personInfo: { name: string; email: string; modelId?: string; creationContext?: { device: string; locale: string; time: number; app: string; creationStory?: string } }): Promise<{ success: boolean; contact?: any; error?: string }> {
     try {
       if (!this.nodeOneCore.leuteModel) {
         throw new Error('Leute model not initialized');
@@ -536,11 +536,23 @@ export class ContactsPlan {
       if (personInfo.modelId && this.nodeOneCore.aiAssistantModel) {
         console.log(`[ContactsPlan] Creating AI contact via AIAssistantPlan: ${personInfo.name} (${personInfo.modelId})`);
 
+        // Create personality with creation context for the AI
+        // Use passed creationContext if available (from LLM name generation), otherwise create basic one
+        const personality = {
+          creationContext: personInfo.creationContext || {
+            device: typeof navigator !== 'undefined' ? navigator.userAgent?.split('/')[0] || 'LAMA' : 'LAMA',
+            locale: typeof navigator !== 'undefined' ? navigator.language || 'en' : 'en',
+            time: Date.now(),
+            app: 'LAMA'
+          }
+        };
+
         // ensureAIForModel creates Person/Profile/Someone AND registers in AIManager
         const personIdHash = await this.nodeOneCore.aiAssistantModel.ensureAIForModel(
           personInfo.modelId,
           personInfo.name,
-          personInfo.email
+          personInfo.email,
+          personality
         );
 
         console.log(`[ContactsPlan] AI contact created: ${personIdHash.toString().substring(0, 8)}...`);
@@ -1082,7 +1094,7 @@ export class ContactsPlan {
         profiles.push({
           profileId: profile.profileId,
           profileIdHash: profile.idHash,
-          personId: request.personId,
+          personId: profile.personId,  // Use actual personId from profile, not request.personId (which is Someone idHash)
           name,
           email,
           avatarBlobHash,

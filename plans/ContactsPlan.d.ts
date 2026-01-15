@@ -131,6 +131,13 @@ export declare class ContactsPlan {
         name: string;
         email: string;
         modelId?: string;
+        creationContext?: {
+            device: string;
+            locale: string;
+            time: number;
+            app: string;
+            creationStory?: string;
+        };
     }): Promise<{
         success: boolean;
         contact?: any;
